@@ -563,4 +563,11 @@ def run_pipeline():
     }
 
 if __name__ == "__main__":
-    run_pipeline()
+    import traceback
+    try:
+        run_pipeline()
+    except Exception as e:
+        print("CRITICAL_PYTHON_ERROR_START")
+        traceback.print_exc()
+        print("CRITICAL_PYTHON_ERROR_END")
+        sys.exit(1)
