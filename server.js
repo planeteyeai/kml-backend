@@ -22,7 +22,7 @@ const DATA_FILE = path.join(DATA_DIR, 'drawn_data.json');
 const PIPELINE_DIR = path.join(__dirname, 'pipeline');
 
 // Subdirectories that should always exist in pipeline
-const PIPELINE_SUBDIRS = ['LHS_KMLs', 'RHS_KMLs', 'Excels', 'Merge_KMLs', 'kml_creation'];
+const PIPELINE_SUBDIRS = ['LHS_KMLs', 'RHS_KMLs', 'Excels', 'Merge_KMLs'];
 
 // Ensure directories exist
 function ensureDirectories() {
@@ -135,8 +135,8 @@ async function processWithPython(metadata, kmlContent) {
     const kmlCreationDir = path.join(__dirname, 'kml_creation');
     const inputKmlPath = path.join(kmlCreationDir, 'input.kml');
     const pythonScriptPath = path.join(kmlCreationDir, 'KML_creation.py');
-    const logPath = path.join(PIPELINE_DIR, 'python_output_log.txt');
-    const errLogPath = path.join(PIPELINE_DIR, 'python_error_log.txt');
+    const logPath = path.join(DATA_DIR, 'python_output_log.txt');
+    const errLogPath = path.join(DATA_DIR, 'python_error_log.txt');
 
     return new Promise(async (resolve, reject) => {
         try {
@@ -440,7 +440,7 @@ app.post('/clear-all', async (req, res) => {
         }
 
         // 3. Clear pipeline subdirectories
-        const subDirs = ['LHS_KMLs', 'RHS_KMLs', 'Excels', 'Merge_KMLs', 'kml_creation'];
+        const subDirs = ['LHS_KMLs', 'RHS_KMLs', 'Excels', 'Merge_KMLs'];
         for (const sub of subDirs) {
             const subPath = path.join(PIPELINE_DIR, sub);
             if (fs.existsSync(subPath)) {
