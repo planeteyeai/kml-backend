@@ -136,9 +136,15 @@ async function processWithPython(metadata, kmlContent) {
         const kmlCreationDir = path.join(__dirname, 'kml_creation');
         const inputKmlPath = path.join(kmlCreationDir, 'input.kml');
         const pythonScriptPath = path.join(kmlCreationDir, 'KML_creation.py');
-        const pythonExePath = 'python3';
-
         
+        // Try 'python3' first, then 'python'
+        let pythonExePath = 'python3';
+        try {
+            await execPromise('python3 --version');
+        } catch (e) {
+            pythonExePath = 'python';
+        }
+
         if (!fs.existsSync(kmlCreationDir)) {
             fs.mkdirSync(kmlCreationDir, { recursive: true });
         }
@@ -153,28 +159,31 @@ async function processWithPython(metadata, kmlContent) {
         const medianOffset = parseFloat(metadata.offsetType) || 2.75;
 
         const command = `"${pythonExePath}" "${pythonScriptPath}" "${inputKmlPath}" "${PIPELINE_DIR}" ${chainageStart} ${interval} ${laneCount} ${mergeOffset} ${laneStep} ${medianOffset}`;
+        console.log(`Executing Python command: ${command}`);
+        
         const { stdout, stderr } = await execPromise(command);
         
-        if (stderr) console.warn(`Python script warning/error: ${stderr}`);
-        console.log(`Python script output: ${stdout}`);
+        if (stdout) console.log(`Python script output: ${stdout}`);
+        if (stderr) {
+            console.warn(`Python script stderr: ${stderr}`);
+            // If there's an actual error in stderr (not just a warning), we might want to know
+            if (stderr.toLowerCase().includes('error') || stderr.toLowerCase().includes('exception')) {
+                throw new Error(stderr);
+            }
+        }
 
         return true;
     } catch (error) {
-        console.error('Error in processWithPython:', error);
+        console.error('CRITICAL Error in processWithPython:', error);
         throw error;
     }
 }
 
 // Helper function to save data to the pipeline folder
 async function saveToPipeline(metadata, content, isKmlContent = false) {
-    try {
-        let kmlContent = isKmlContent ? content : geojsonToKml(content, 'Drawn_Data');
-        await processWithPython(metadata, kmlContent);
-        return 'Merge_KMLs';
-    } catch (error) {
-        console.error('Error saving to pipeline:', error);
-        return null;
-    }
+    let kmlContent = isKmlContent ? content : geojsonToKml(content, 'Drawn_Data');
+    await processWithPython(metadata, kmlContent);
+    return 'Merge_KMLs';
 }
 
 // Helper function to trigger pipeline from data file
@@ -305,10 +314,25 @@ app.post('/upload-kml', upload.single('kmlFile'), async (req, res) => {
         };
 
         fs.writeFileSync(DATA_FILE, JSON.stringify([kmlData], null, 2));
-        await saveToPipeline(kmlData.metadata, kmlContent, true);
-        res.json({ success: true, message: 'File uploaded and processed successfully', pipelinePath: 'Merge_KMLs', data: kmlData });
+        const pipelinePath = await saveToPipeline(kmlData.metadata, kmlContent, true);
+        
+        if (!pipelinePath) {
+            throw new Error('Pipeline processing failed to return a valid path');
+        }
+
+        res.json({ 
+            success: true, 
+            message: 'File uploaded and processed successfully', 
+            pipelinePath: pipelinePath, 
+            data: kmlData 
+        });
     } catch (error) {
-        res.status(500).json({ success: false, message: 'Error uploading file' });
+        console.error('Upload-KML Error:', error);
+        res.status(500).json({ 
+            success: false, 
+            message: 'Error uploading and processing file', 
+            details: error.message 
+        });
     }
 });
 
@@ -318,10 +342,26 @@ app.post('/save', async (req, res) => {
         newData.id = Date.now();
         newData.timestamp = new Date().toISOString();
         fs.writeFileSync(DATA_FILE, JSON.stringify([newData], null, 2));
+        
         const pipelinePath = await saveToPipeline(newData.metadata, newData.geometry, false);
-        res.json({ success: true, message: 'Data saved successfully', id: newData.id, pipelinePath: pipelinePath });
+        
+        if (!pipelinePath) {
+            throw new Error('Save operation failed to generate pipeline files');
+        }
+
+        res.json({ 
+            success: true, 
+            message: 'Data saved and processed successfully', 
+            id: newData.id, 
+            pipelinePath: pipelinePath 
+        });
     } catch (error) {
-        res.status(500).json({ success: false, message: 'Error saving data' });
+        console.error('Save Error:', error);
+        res.status(500).json({ 
+            success: false, 
+            message: 'Error saving and processing data', 
+            details: error.message 
+        });
     }
 });
 
