@@ -161,14 +161,30 @@ async function processWithPython(metadata, kmlContent) {
         const command = `"${pythonExePath}" "${pythonScriptPath}" "${inputKmlPath}" "${PIPELINE_DIR}" ${chainageStart} ${interval} ${laneCount} ${mergeOffset} ${laneStep} ${medianOffset}`;
         console.log(`Executing Python command: ${command}`);
         
-        const { stdout, stderr } = await execPromise(command);
+        let stdout, stderr;
+        try {
+            const result = await execPromise(command);
+            stdout = result.stdout;
+            stderr = result.stderr;
+        } catch (execError) {
+            stdout = execError.stdout;
+            stderr = execError.stderr;
+            const logContent = `COMMAND: ${command}\n\nSTDOUT:\n${stdout}\n\nSTDERR:\n${stderr}\n\nERROR:\n${execError.message}`;
+            fs.writeFileSync(path.join(PIPELINE_DIR, 'python_error_log.txt'), logContent);
+            throw new Error(`Python script execution failed: ${execError.message}. See python_error_log.txt for details.`);
+        }
         
+        const logContent = `COMMAND: ${command}\n\nSTDOUT:\n${stdout}\n\nSTDERR:\n${stderr}`;
+        fs.writeFileSync(path.join(PIPELINE_DIR, 'python_output_log.txt'), logContent);
+
         if (stdout) console.log(`Python script output: ${stdout}`);
         if (stderr) {
             console.warn(`Python script stderr: ${stderr}`);
-            // If there's an actual error in stderr (not just a warning), we might want to know
             if (stderr.toLowerCase().includes('error') || stderr.toLowerCase().includes('exception')) {
-                throw new Error(stderr);
+                // Check if it's just a warning or a real error
+                if (!stdout || stdout.indexOf('ALL DONE') === -1) {
+                    throw new Error(stderr);
+                }
             }
         }
 
