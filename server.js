@@ -36,6 +36,11 @@ app.use(cors({
 app.use(bodyParser.json({ limit: '50mb' }));
 app.use(express.urlencoded({ limit: '50mb', extended: true }));
 
+// Health check route for Railway
+app.get('/', (req, res) => {
+    res.json({ status: 'Backend is running successfully', timestamp: new Date() });
+});
+
 
 // Helper function to convert GeoJSON to KML
 function geojsonToKml(features, name) {
