@@ -78,17 +78,25 @@ def read_linestring_from_kml(kml_path):
             raise ValueError("No <coordinates> found in KML.")
         
         all_coords = []
+        import re
         for c_el in coords_elements:
-            if c_el.firstChild and c_el.firstChild.nodeValue.strip():
-                coord_text = c_el.firstChild.nodeValue.strip()
-                coord_pairs = coord_text.split()
-                for pair in coord_pairs:
-                    parts = pair.split(",")
-                    if len(parts) < 2:
-                        continue
-                    lon = float(parts[0])
-                    lat = float(parts[1])
+            if not c_el.firstChild:
+                continue
+            coord_text = c_el.firstChild.nodeValue.strip()
+            if not coord_text:
+                continue
+            
+            # Use regex to find all coordinate pairs more robustly
+            # Matches "lon,lat" or "lon,lat,alt" separated by whitespace
+            coord_pairs = re.findall(r"([-+]?\d*\.\d+|[-+]?\d+),\s*([-+]?\d*\.\d+|[-+]?\d+)(?:,\s*[-+]?\d*\.\d+|[-+]?\d+)?", coord_text)
+            
+            for lon_str, lat_str in coord_pairs:
+                try:
+                    lon = float(lon_str)
+                    lat = float(lat_str)
                     all_coords.append((lon, lat))
+                except (ValueError, TypeError):
+                    continue
         
         if not all_coords:
             raise ValueError("All <coordinates> tags are empty.")
