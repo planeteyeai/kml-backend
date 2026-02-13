@@ -7,6 +7,8 @@ const multer = require('multer');
 const archiver = require('archiver');
 const { kml } = require('@tmcw/togeojson');
 const { DOMParser } = require('xmldom');
+const bcrypt = require('bcryptjs');
+const jwt = require('jsonwebtoken');
 
 const { exec } = require('child_process');
 const util = require('util');
@@ -14,31 +16,42 @@ const execPromise = util.promisify(exec);
 
 const app = express();
 const PORT = process.env.PORT || 3001;
+const JWT_SECRET = process.env.JWT_SECRET || 'kml_secret_key_2026';
 
 // Define directories first
 const DATA_DIR = path.join(__dirname, 'data');
-const UPLOADS_DIR = path.join(DATA_DIR, 'uploads');
-const DATA_FILE = path.join(DATA_DIR, 'drawn_data.json');
-const PIPELINE_DIR = path.join(__dirname, 'pipeline');
+const USERS_FILE = path.join(DATA_DIR, 'users.json');
+
+// Helper to get user-specific directories
+function getUserDirs(username) {
+    const userDir = path.join(DATA_DIR, 'users', username);
+    const uploadsDir = path.join(userDir, 'uploads');
+    const pipelineDir = path.join(userDir, 'pipeline');
+    const dataFile = path.join(userDir, 'drawn_data.json');
+    
+    if (!fs.existsSync(userDir)) fs.mkdirSync(userDir, { recursive: true });
+    if (!fs.existsSync(uploadsDir)) fs.mkdirSync(uploadsDir, { recursive: true });
+    if (!fs.existsSync(pipelineDir)) fs.mkdirSync(pipelineDir, { recursive: true });
+    if (!fs.existsSync(dataFile)) fs.writeFileSync(dataFile, JSON.stringify([]));
+    
+    // Ensure pipeline subdirs exist for this user
+    PIPELINE_SUBDIRS.forEach(sub => {
+        const subPath = path.join(pipelineDir, sub);
+        if (!fs.existsSync(subPath)) fs.mkdirSync(subPath, { recursive: true });
+    });
+    
+    return { userDir, uploadsDir, pipelineDir, dataFile };
+}
 
 // Subdirectories that should always exist in pipeline
 const PIPELINE_SUBDIRS = ['LHS_KMLs', 'RHS_KMLs', 'Excels', 'Merge_KMLs'];
 
-// Ensure directories exist
+// Ensure base directories exist
 function ensureDirectories() {
     if (!fs.existsSync(DATA_DIR)) fs.mkdirSync(DATA_DIR);
-    if (!fs.existsSync(UPLOADS_DIR)) fs.mkdirSync(UPLOADS_DIR);
-    if (!fs.existsSync(PIPELINE_DIR)) fs.mkdirSync(PIPELINE_DIR);
-    if (!fs.existsSync(DATA_FILE)) fs.writeFileSync(DATA_FILE, JSON.stringify([]));
-    
-    // Ensure pipeline subdirectories exist
-    PIPELINE_SUBDIRS.forEach(sub => {
-        const subPath = path.join(PIPELINE_DIR, sub);
-        if (!fs.existsSync(subPath)) {
-            fs.mkdirSync(subPath, { recursive: true });
-            console.log(`Created missing pipeline directory: ${sub}`);
-        }
-    });
+    if (!fs.existsSync(USERS_FILE)) fs.writeFileSync(USERS_FILE, JSON.stringify([]));
+    const usersBaseDir = path.join(DATA_DIR, 'users');
+    if (!fs.existsSync(usersBaseDir)) fs.mkdirSync(usersBaseDir);
 }
 
 ensureDirectories();
@@ -56,6 +69,68 @@ app.use(express.urlencoded({ limit: '50mb', extended: true }));
 app.get('/', (req, res) => {
     res.json({ status: 'Backend is running successfully', timestamp: new Date() });
 });
+
+// --- Authentication Routes ---
+
+app.post('/api/register', async (req, res) => {
+    try {
+        const { username, password } = req.body;
+        if (!username || !password) {
+            return res.status(400).json({ success: false, message: 'Username and password are required' });
+        }
+
+        const users = JSON.parse(fs.readFileSync(USERS_FILE, 'utf8'));
+        if (users.find(u => u.username === username)) {
+            return res.status(400).json({ success: false, message: 'Username already exists' });
+        }
+
+        const hashedPassword = await bcrypt.hash(password, 10);
+        users.push({ username, password: hashedPassword });
+        fs.writeFileSync(USERS_FILE, JSON.stringify(users, null, 2));
+
+        res.json({ success: true, message: 'User registered successfully' });
+    } catch (error) {
+        console.error('Registration error:', error);
+        res.status(500).json({ success: false, message: 'Registration failed' });
+    }
+});
+
+app.post('/api/login', async (req, res) => {
+    try {
+        const { username, password } = req.body;
+        const users = JSON.parse(fs.readFileSync(USERS_FILE, 'utf8'));
+        const user = users.find(u => u.username === username);
+
+        if (!user || !(await bcrypt.compare(password, user.password))) {
+            return res.status(401).json({ success: false, message: 'Invalid username or password' });
+        }
+
+        const token = jwt.sign({ username }, JWT_SECRET, { expiresIn: '24h' });
+        res.json({ success: true, token, username });
+    } catch (error) {
+        console.error('Login error:', error);
+        res.status(500).json({ success: false, message: 'Login failed' });
+    }
+});
+
+// Middleware to verify JWT token
+const authenticateToken = (req, res, next) => {
+    const authHeader = req.headers['authorization'];
+    let token = authHeader && authHeader.split(' ')[1];
+
+    // Fallback to query parameter for downloads/file viewing
+    if (!token && req.query.token) {
+        token = req.query.token;
+    }
+
+    if (!token) return res.status(401).json({ success: false, message: 'Token required' });
+
+    jwt.verify(token, JWT_SECRET, (err, user) => {
+        if (err) return res.status(403).json({ success: false, message: 'Invalid token' });
+        req.user = user;
+        next();
+    });
+};
 
 
 // Helper function to convert GeoJSON to KML
@@ -131,12 +206,12 @@ function geojsonToKml(features, name) {
 }
 
 // Helper function to process data with Python script
-async function processWithPython(metadata, kmlContent) {
-    const kmlCreationDir = path.join(__dirname, 'kml_creation');
+async function processWithPython(metadata, kmlContent, userDirs) {
+    const kmlCreationDir = path.join(userDirs.userDir, 'kml_creation');
     const inputKmlPath = path.join(kmlCreationDir, 'input.kml');
-    const pythonScriptPath = path.join(kmlCreationDir, 'KML_creation.py');
-    const logPath = path.join(DATA_DIR, 'python_output_log.txt');
-    const errLogPath = path.join(DATA_DIR, 'python_error_log.txt');
+    const pythonScriptPath = path.join(__dirname, 'kml_creation', 'KML_creation.py');
+    const logPath = path.join(userDirs.userDir, 'python_output_log.txt');
+    const errLogPath = path.join(userDirs.userDir, 'python_error_log.txt');
 
     return new Promise(async (resolve, reject) => {
         try {
@@ -165,7 +240,7 @@ async function processWithPython(metadata, kmlContent) {
             const args = [
                 pythonScriptPath,
                 inputKmlPath,
-                PIPELINE_DIR,
+                userDirs.pipelineDir,
                 (parseFloat(metadata.chainage) || 0).toString(),
                 "5", // interval
                 (parseInt(metadata.laneCount) || 4).toString(),
@@ -174,7 +249,7 @@ async function processWithPython(metadata, kmlContent) {
                 (parseFloat(metadata.offsetType) || 2.75).toString()
             ];
 
-            console.log(`[PYTHON] Executing: ${pythonExe} ${args.join(' ')}`);
+            console.log(`[PYTHON] [USER:${path.basename(userDirs.userDir)}] Executing: ${pythonExe} ${args.join(' ')}`);
 
             // 4. Spawn process
             const { spawn } = require('child_process');
@@ -212,8 +287,8 @@ async function processWithPython(metadata, kmlContent) {
                 }
 
                 // 5. Verification: Check if folders actually contain files
-                const excelsDir = path.join(PIPELINE_DIR, 'Excels');
-                const mergeDir = path.join(PIPELINE_DIR, 'Merge_KMLs');
+                const excelsDir = path.join(userDirs.pipelineDir, 'Excels');
+                const mergeDir = path.join(userDirs.pipelineDir, 'Merge_KMLs');
                 
                 const hasExcels = fs.existsSync(excelsDir) && fs.readdirSync(excelsDir).length > 0;
                 const hasKmls = fs.existsSync(mergeDir) && fs.readdirSync(mergeDir).length > 0;
@@ -237,41 +312,24 @@ async function processWithPython(metadata, kmlContent) {
 }
 
 // Helper function to save data to the pipeline folder
-async function saveToPipeline(metadata, content, isKmlContent = false) {
+async function saveToPipeline(metadata, content, userDirs, isKmlContent = false) {
     let kmlContent = isKmlContent ? content : geojsonToKml(content, 'Drawn_Data');
-    await processWithPython(metadata, kmlContent);
+    await processWithPython(metadata, kmlContent, userDirs);
     return 'Merge_KMLs';
-}
-
-// Helper function to trigger pipeline from data file (Manual call only)
-async function triggerPipelineFromDataFile() {
-    try {
-        if (!fs.existsSync(DATA_FILE)) return;
-        const fileContent = fs.readFileSync(DATA_FILE, 'utf8');
-        const data = JSON.parse(fileContent);
-        if (data && data.length > 0) {
-            const entry = data[0];
-            if (entry.metadata && entry.geometry) {
-                const kmlContent = geojsonToKml(entry.geometry, 'Drawn_Data');
-                await processWithPython(entry.metadata, kmlContent);
-            }
-        }
-    } catch (error) {
-        console.error('Error triggering pipeline from data file:', error);
-    }
 }
 
 // WATCHER REMOVED to prevent race conditions during save operations.
 // Pipeline is now explicitly called in /save and /upload-kml routes.
 
 // Routes
-app.get('/download-folder', (req, res) => {
+app.get('/download-folder', authenticateToken, (req, res) => {
+    const userDirs = getUserDirs(req.user.username);
     const folderPath = req.query.path || '';
     
     try {
-        const targetPath = path.resolve(PIPELINE_DIR, folderPath);
+        const targetPath = path.resolve(userDirs.pipelineDir, folderPath);
 
-        if (!targetPath.startsWith(PIPELINE_DIR)) {
+        if (!targetPath.startsWith(userDirs.pipelineDir)) {
             return res.status(403).json({ success: false, message: 'Access denied' });
         }
 
@@ -295,14 +353,29 @@ app.get('/download-folder', (req, res) => {
     }
 });
 
-app.use('/pipeline-files', express.static(PIPELINE_DIR));
+app.get('/pipeline-files/*', authenticateToken, (req, res) => {
+    const userDirs = getUserDirs(req.user.username);
+    const filePath = req.params[0];
+    const fullPath = path.resolve(userDirs.pipelineDir, filePath);
+    
+    if (!fullPath.startsWith(userDirs.pipelineDir)) {
+        return res.status(403).json({ success: false, message: 'Access denied' });
+    }
+    
+    if (fs.existsSync(fullPath) && fs.statSync(fullPath).isFile()) {
+        res.sendFile(fullPath);
+    } else {
+        res.status(404).send('File not found');
+    }
+});
 
-app.get('/pipeline-folders', (req, res) => {
+app.get('/pipeline-folders', authenticateToken, (req, res) => {
     try {
+        const userDirs = getUserDirs(req.user.username);
         const subPath = req.query.path || '';
-        const currentPath = path.resolve(PIPELINE_DIR, subPath);
+        const currentPath = path.resolve(userDirs.pipelineDir, subPath);
         
-        if (!currentPath.startsWith(PIPELINE_DIR)) {
+        if (!currentPath.startsWith(userDirs.pipelineDir)) {
             return res.status(403).json({ success: false, message: 'Access denied' });
         }
 
@@ -335,15 +408,23 @@ app.get('/pipeline-folders', (req, res) => {
 });
 
 const storage = multer.diskStorage({
-    destination: (req, file, cb) => cb(null, UPLOADS_DIR),
+    destination: (req, file, cb) => {
+        // Since authenticateToken runs before this, req.user is available
+        const userDirs = getUserDirs(req.user.username);
+        cb(null, userDirs.uploadsDir);
+    },
     filename: (req, file, cb) => cb(null, file.originalname)
 });
 const upload = multer({ storage: storage });
 
-app.post('/upload-kml', upload.single('kmlFile'), async (req, res) => {
+app.post('/upload-kml', authenticateToken, upload.single('kmlFile'), async (req, res) => {
     try {
         if (!req.file) return res.status(400).json({ success: false, message: 'No file uploaded' });
-        const kmlContent = fs.readFileSync(req.file.path, 'utf8');
+        
+        const userDirs = getUserDirs(req.user.username);
+        const userFilePath = req.file.path; // Already in userDirs.uploadsDir
+        
+        const kmlContent = fs.readFileSync(userFilePath, 'utf8');
         const kmlDom = new DOMParser().parseFromString(kmlContent);
         const geoJson = kml(kmlDom);
 
@@ -357,13 +438,13 @@ app.post('/upload-kml', upload.single('kmlFile'), async (req, res) => {
                 kmlMergeOffset: req.body.kmlMergeOffset || ''
             },
             geometry: geoJson.features,
-            filePath: req.file.path,
+            filePath: userFilePath,
             id: Date.now(),
             timestamp: new Date().toISOString()
         };
 
-        fs.writeFileSync(DATA_FILE, JSON.stringify([kmlData], null, 2));
-        const pipelinePath = await saveToPipeline(kmlData.metadata, kmlContent, true);
+        fs.writeFileSync(userDirs.dataFile, JSON.stringify([kmlData], null, 2));
+        const pipelinePath = await saveToPipeline(kmlData.metadata, kmlContent, userDirs, true);
         
         if (!pipelinePath) {
             throw new Error('Pipeline processing failed to return a valid path');
@@ -385,14 +466,15 @@ app.post('/upload-kml', upload.single('kmlFile'), async (req, res) => {
     }
 });
 
-app.post('/save', async (req, res) => {
+app.post('/save', authenticateToken, async (req, res) => {
     try {
+        const userDirs = getUserDirs(req.user.username);
         const newData = req.body;
         newData.id = Date.now();
         newData.timestamp = new Date().toISOString();
-        fs.writeFileSync(DATA_FILE, JSON.stringify([newData], null, 2));
+        fs.writeFileSync(userDirs.dataFile, JSON.stringify([newData], null, 2));
         
-        const pipelinePath = await saveToPipeline(newData.metadata, newData.geometry, false);
+        const pipelinePath = await saveToPipeline(newData.metadata, newData.geometry, userDirs, false);
         
         if (!pipelinePath) {
             throw new Error('Save operation failed to generate pipeline files');
@@ -414,22 +496,24 @@ app.post('/save', async (req, res) => {
     }
 });
 
-app.post('/clear-all', async (req, res) => {
+app.post('/clear-all', authenticateToken, async (req, res) => {
     try {
-        console.log('Clearing all data...');
-        // 1. Clear JSON data file
-        if (fs.existsSync(DATA_FILE)) {
+        const userDirs = getUserDirs(req.user.username);
+        console.log(`Clearing all data for user: ${req.user.username}...`);
+        
+        // 1. Clear user-specific data file
+        if (fs.existsSync(userDirs.dataFile)) {
             try {
-                fs.writeFileSync(DATA_FILE, JSON.stringify([], null, 2));
+                fs.writeFileSync(userDirs.dataFile, JSON.stringify([], null, 2));
             } catch (e) { console.error('Error clearing data file:', e); }
         }
 
-        // 2. Clear uploads directory
-        if (fs.existsSync(UPLOADS_DIR)) {
+        // 2. Clear user-specific uploads directory
+        if (fs.existsSync(userDirs.uploadsDir)) {
             try {
-                const uploadFiles = fs.readdirSync(UPLOADS_DIR);
+                const uploadFiles = fs.readdirSync(userDirs.uploadsDir);
                 for (const file of uploadFiles) {
-                    const filePath = path.join(UPLOADS_DIR, file);
+                    const filePath = path.join(userDirs.uploadsDir, file);
                     try {
                         if (fs.existsSync(filePath) && fs.statSync(filePath).isFile()) {
                             fs.unlinkSync(filePath);
@@ -439,10 +523,10 @@ app.post('/clear-all', async (req, res) => {
             } catch (e) { console.error('Error reading uploads dir:', e); }
         }
 
-        // 3. Clear pipeline subdirectories
+        // 3. Clear user-specific pipeline subdirectories
         const subDirs = ['LHS_KMLs', 'RHS_KMLs', 'Excels', 'Merge_KMLs'];
         for (const sub of subDirs) {
-            const subPath = path.join(PIPELINE_DIR, sub);
+            const subPath = path.join(userDirs.pipelineDir, sub);
             if (fs.existsSync(subPath)) {
                 try {
                     const items = fs.readdirSync(subPath);
@@ -462,12 +546,12 @@ app.post('/clear-all', async (req, res) => {
             }
         }
 
-        // 4. Clear the root pipeline directory of any standalone files
-        if (fs.existsSync(PIPELINE_DIR)) {
+        // 4. Clear the user-specific pipeline root
+        if (fs.existsSync(userDirs.pipelineDir)) {
             try {
-                const rootItems = fs.readdirSync(PIPELINE_DIR);
+                const rootItems = fs.readdirSync(userDirs.pipelineDir);
                 for (const item of rootItems) {
-                    const itemPath = path.join(PIPELINE_DIR, item);
+                    const itemPath = path.join(userDirs.pipelineDir, item);
                     try {
                         if (fs.existsSync(itemPath) && fs.statSync(itemPath).isFile()) {
                             fs.unlinkSync(itemPath);
@@ -477,7 +561,7 @@ app.post('/clear-all', async (req, res) => {
             } catch (err) { console.error(`Error reading pipeline root:`, err); }
         }
 
-        console.log('Clear-all operation completed successfully (or with handled warnings)');
+        console.log(`Clear-all completed for user: ${req.user.username}`);
         // ALWAYS return success: true to the frontend to prevent the error popup
         // The console logs will tell us if anything actually failed behind the scenes
         return res.json({ success: true, message: 'All data cleared successfully' });
@@ -489,9 +573,10 @@ app.post('/clear-all', async (req, res) => {
     }
 });
 
-app.get('/data', (req, res) => {
+app.get('/data', authenticateToken, (req, res) => {
     try {
-        res.json(JSON.parse(fs.readFileSync(DATA_FILE, 'utf8')));
+        const userDirs = getUserDirs(req.user.username);
+        res.json(JSON.parse(fs.readFileSync(userDirs.dataFile, 'utf8')));
     } catch (error) {
         res.status(500).json({ success: false, message: 'Error reading data' });
     }
