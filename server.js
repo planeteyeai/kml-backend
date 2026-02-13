@@ -21,11 +21,27 @@ const UPLOADS_DIR = path.join(DATA_DIR, 'uploads');
 const DATA_FILE = path.join(DATA_DIR, 'drawn_data.json');
 const PIPELINE_DIR = path.join(__dirname, 'pipeline');
 
+// Subdirectories that should always exist in pipeline
+const PIPELINE_SUBDIRS = ['LHS_KMLs', 'RHS_KMLs', 'Excels', 'Merge_KMLs', 'kml_creation'];
+
 // Ensure directories exist
-if (!fs.existsSync(DATA_DIR)) fs.mkdirSync(DATA_DIR);
-if (!fs.existsSync(UPLOADS_DIR)) fs.mkdirSync(UPLOADS_DIR);
-if (!fs.existsSync(PIPELINE_DIR)) fs.mkdirSync(PIPELINE_DIR);
-if (!fs.existsSync(DATA_FILE)) fs.writeFileSync(DATA_FILE, JSON.stringify([]));
+function ensureDirectories() {
+    if (!fs.existsSync(DATA_DIR)) fs.mkdirSync(DATA_DIR);
+    if (!fs.existsSync(UPLOADS_DIR)) fs.mkdirSync(UPLOADS_DIR);
+    if (!fs.existsSync(PIPELINE_DIR)) fs.mkdirSync(PIPELINE_DIR);
+    if (!fs.existsSync(DATA_FILE)) fs.writeFileSync(DATA_FILE, JSON.stringify([]));
+    
+    // Ensure pipeline subdirectories exist
+    PIPELINE_SUBDIRS.forEach(sub => {
+        const subPath = path.join(PIPELINE_DIR, sub);
+        if (!fs.existsSync(subPath)) {
+            fs.mkdirSync(subPath, { recursive: true });
+            console.log(`Created missing pipeline directory: ${sub}`);
+        }
+    });
+}
+
+ensureDirectories();
 
 app.use(cors({
     origin: ["https://kml-frontend-production.up.railway.app", "http://localhost:3000"],
