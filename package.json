@@ -1,0 +1,19 @@
+{
+  "name": "kml-backend",
+  "version": "1.0.0",
+  "description": "Backend for KML creation and pipeline",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "dev": "nodemon server.js"
+  },
+  "dependencies": {
+    "archiver": "^7.0.1",
+    "body-parser": "^2.2.2",
+    "cors": "^2.8.6",
+    "express": "^5.2.1",
+    "multer": "^2.0.2",
+    "@tmcw/togeojson": "^7.1.2",
+    "xmldom": "^0.6.0"
+  }
+}
