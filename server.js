@@ -28,7 +28,7 @@ if (!fs.existsSync(PIPELINE_DIR)) fs.mkdirSync(PIPELINE_DIR);
 if (!fs.existsSync(DATA_FILE)) fs.writeFileSync(DATA_FILE, JSON.stringify([]));
 
 app.use(cors({
-    origin: "*",
+    origin: ["https://kml-frontend-production.up.railway.app", "http://localhost:3000"],
     methods: ["GET","POST","PUT","DELETE"],
     allowedHeaders: ["Content-Type"]
 }));
