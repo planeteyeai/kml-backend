@@ -146,10 +146,19 @@ async function processWithPython(metadata, kmlContent) {
 
             // 2. Resolve Python path
             let pythonExe = 'python3';
-            try {
-                await execPromise('python3 --version');
-            } catch (e) {
-                pythonExe = 'python';
+            
+            // Check for virtual environment path (Railway/Docker)
+            const venvPath = '/opt/venv/bin/python';
+            if (fs.existsSync(venvPath)) {
+                pythonExe = venvPath;
+            } else {
+                // Local fallback
+                try {
+                    await execPromise('python3 --version');
+                    pythonExe = 'python3';
+                } catch (e) {
+                    pythonExe = 'python';
+                }
             }
 
             // 3. Prepare Arguments (Exactly 8 parameters as required)
