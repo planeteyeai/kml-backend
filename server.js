@@ -132,67 +132,99 @@ function geojsonToKml(features, name) {
 
 // Helper function to process data with Python script
 async function processWithPython(metadata, kmlContent) {
-    try {
-        const kmlCreationDir = path.join(__dirname, 'kml_creation');
-        const inputKmlPath = path.join(kmlCreationDir, 'input.kml');
-        const pythonScriptPath = path.join(kmlCreationDir, 'KML_creation.py');
-        
-        // Try 'python3' first, then 'python'
-        let pythonExePath = 'python3';
+    const kmlCreationDir = path.join(__dirname, 'kml_creation');
+    const inputKmlPath = path.join(kmlCreationDir, 'input.kml');
+    const pythonScriptPath = path.join(kmlCreationDir, 'KML_creation.py');
+    const logPath = path.join(PIPELINE_DIR, 'python_output_log.txt');
+    const errLogPath = path.join(PIPELINE_DIR, 'python_error_log.txt');
+
+    return new Promise(async (resolve, reject) => {
         try {
-            await execPromise('python3 --version');
-        } catch (e) {
-            pythonExePath = 'python';
-        }
+            // 1. Prepare environment
+            if (!fs.existsSync(kmlCreationDir)) fs.mkdirSync(kmlCreationDir, { recursive: true });
+            fs.writeFileSync(inputKmlPath, kmlContent);
 
-        if (!fs.existsSync(kmlCreationDir)) {
-            fs.mkdirSync(kmlCreationDir, { recursive: true });
-        }
-
-        fs.writeFileSync(inputKmlPath, kmlContent);
-        
-        const chainageStart = parseFloat(metadata.chainage) || 0;
-        const interval = 5; 
-        const laneCount = parseInt(metadata.laneCount) || 4;
-        const mergeOffset = parseFloat(metadata.kmlMergeOffset) || 0.100;
-        const laneStep = 3.4; 
-        const medianOffset = parseFloat(metadata.offsetType) || 2.75;
-
-        const command = `"${pythonExePath}" "${pythonScriptPath}" "${inputKmlPath}" "${PIPELINE_DIR}" ${chainageStart} ${interval} ${laneCount} ${mergeOffset} ${laneStep} ${medianOffset}`;
-        console.log(`Executing Python command: ${command}`);
-        
-        let stdout, stderr;
-        try {
-            const result = await execPromise(command);
-            stdout = result.stdout;
-            stderr = result.stderr;
-        } catch (execError) {
-            stdout = execError.stdout;
-            stderr = execError.stderr;
-            const logContent = `COMMAND: ${command}\n\nSTDOUT:\n${stdout}\n\nSTDERR:\n${stderr}\n\nERROR:\n${execError.message}`;
-            fs.writeFileSync(path.join(PIPELINE_DIR, 'python_error_log.txt'), logContent);
-            throw new Error(`Python script execution failed: ${execError.message}. See python_error_log.txt for details.`);
-        }
-        
-        const logContent = `COMMAND: ${command}\n\nSTDOUT:\n${stdout}\n\nSTDERR:\n${stderr}`;
-        fs.writeFileSync(path.join(PIPELINE_DIR, 'python_output_log.txt'), logContent);
-
-        if (stdout) console.log(`Python script output: ${stdout}`);
-        if (stderr) {
-            console.warn(`Python script stderr: ${stderr}`);
-            if (stderr.toLowerCase().includes('error') || stderr.toLowerCase().includes('exception')) {
-                // Check if it's just a warning or a real error
-                if (!stdout || stdout.indexOf('ALL DONE') === -1) {
-                    throw new Error(stderr);
-                }
+            // 2. Resolve Python path
+            let pythonExe = 'python3';
+            try {
+                await execPromise('python3 --version');
+            } catch (e) {
+                pythonExe = 'python';
             }
-        }
 
-        return true;
-    } catch (error) {
-        console.error('CRITICAL Error in processWithPython:', error);
-        throw error;
-    }
+            // 3. Prepare Arguments (Exactly 8 parameters as required)
+            const args = [
+                pythonScriptPath,
+                inputKmlPath,
+                PIPELINE_DIR,
+                (parseFloat(metadata.chainage) || 0).toString(),
+                "5", // interval
+                (parseInt(metadata.laneCount) || 4).toString(),
+                (parseFloat(metadata.kmlMergeOffset) || 0.100).toString(),
+                "3.4", // laneStep
+                (parseFloat(metadata.offsetType) || 2.75).toString()
+            ];
+
+            console.log(`[PYTHON] Executing: ${pythonExe} ${args.join(' ')}`);
+
+            // 4. Spawn process
+            const { spawn } = require('child_process');
+            const child = spawn(pythonExe, args);
+
+            let stdoutData = '';
+            let stderrData = '';
+
+            child.stdout.on('data', (data) => {
+                const str = data.toString();
+                stdoutData += str;
+                process.stdout.write(`[PYTHON STDOUT] ${str}`);
+            });
+
+            child.stderr.on('data', (data) => {
+                const str = data.toString();
+                stderrData += str;
+                process.stderr.write(`[PYTHON STDERR] ${str}`);
+            });
+
+            child.on('close', (code) => {
+                // Write logs
+                const fullLog = `COMMAND: ${pythonExe} ${args.join(' ')}\n\nSTDOUT:\n${stdoutData}\n\nSTDERR:\n${stderrData}`;
+                fs.writeFileSync(logPath, fullLog);
+
+                if (code !== 0) {
+                    const errorMsg = stderrData || stdoutData || 'Unknown error';
+                    fs.writeFileSync(errLogPath, `EXIT CODE ${code}\n\n${errorMsg}`);
+                    
+                    // Check for our custom error markers
+                    const errorMatch = errorMsg.match(/CRITICAL_PYTHON_ERROR_START([\s\S]*)CRITICAL_PYTHON_ERROR_END/);
+                    const specificError = errorMatch ? errorMatch[1].trim() : errorMsg;
+                    
+                    return reject(new Error(`Python script failed (Code ${code}): ${specificError}`));
+                }
+
+                // 5. Verification: Check if folders actually contain files
+                const excelsDir = path.join(PIPELINE_DIR, 'Excels');
+                const mergeDir = path.join(PIPELINE_DIR, 'Merge_KMLs');
+                
+                const hasExcels = fs.existsSync(excelsDir) && fs.readdirSync(excelsDir).length > 0;
+                const hasKmls = fs.existsSync(mergeDir) && fs.readdirSync(mergeDir).length > 0;
+
+                if (!hasExcels && !hasKmls) {
+                    return reject(new Error('Python script finished but NO files were generated. Check input KML coordinates.'));
+                }
+
+                console.log('[PYTHON] Execution successful. Files generated.');
+                resolve(true);
+            });
+
+            child.on('error', (err) => {
+                reject(new Error(`Failed to start Python process: ${err.message}`));
+            });
+
+        } catch (error) {
+            reject(error);
+        }
+    });
 }
 
 // Helper function to save data to the pipeline folder
@@ -202,7 +234,7 @@ async function saveToPipeline(metadata, content, isKmlContent = false) {
     return 'Merge_KMLs';
 }
 
-// Helper function to trigger pipeline from data file
+// Helper function to trigger pipeline from data file (Manual call only)
 async function triggerPipelineFromDataFile() {
     try {
         if (!fs.existsSync(DATA_FILE)) return;
@@ -220,16 +252,8 @@ async function triggerPipelineFromDataFile() {
     }
 }
 
-// Watch for changes in drawn_data.json
-let watchTimeout;
-fs.watch(DATA_DIR, (eventType, filename) => {
-    if (filename === 'drawn_data.json') {
-        if (watchTimeout) clearTimeout(watchTimeout);
-        watchTimeout = setTimeout(() => {
-            triggerPipelineFromDataFile();
-        }, 1000); 
-    }
-});
+// WATCHER REMOVED to prevent race conditions during save operations.
+// Pipeline is now explicitly called in /save and /upload-kml routes.
 
 // Routes
 app.get('/download-folder', (req, res) => {
