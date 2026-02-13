@@ -13,6 +13,9 @@ WORKDIR /app
 COPY package*.json ./
 RUN npm install --omit=dev
 
+COPY requirements.txt ./
+RUN pip3 install --no-cache-dir -r requirements.txt
+
 COPY . .
 
 ENV NODE_ENV=production
