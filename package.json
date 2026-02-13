@@ -8,12 +8,14 @@
     "dev": "nodemon server.js"
   },
   "dependencies": {
+    "@tmcw/togeojson": "^7.1.2",
     "archiver": "^7.0.1",
+    "bcryptjs": "^3.0.3",
     "body-parser": "^2.2.2",
     "cors": "^2.8.6",
     "express": "^5.2.1",
+    "jsonwebtoken": "^9.0.3",
     "multer": "^2.0.2",
-    "@tmcw/togeojson": "^7.1.2",
     "xmldom": "^0.6.0"
   }
 }

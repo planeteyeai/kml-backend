@@ -78,17 +78,25 @@ def read_linestring_from_kml(kml_path):
             raise ValueError("No <coordinates> found in KML.")
         
         all_coords = []
+        import re
         for c_el in coords_elements:
-            if c_el.firstChild and c_el.firstChild.nodeValue.strip():
-                coord_text = c_el.firstChild.nodeValue.strip()
-                coord_pairs = coord_text.split()
-                for pair in coord_pairs:
-                    parts = pair.split(",")
-                    if len(parts) < 2:
-                        continue
-                    lon = float(parts[0])
-                    lat = float(parts[1])
+            if not c_el.firstChild:
+                continue
+            coord_text = c_el.firstChild.nodeValue.strip()
+            if not coord_text:
+                continue
+            
+            # Use regex to find all coordinate pairs more robustly
+            # Matches "lon,lat" or "lon,lat,alt" separated by whitespace
+            coord_pairs = re.findall(r"([-+]?\d*\.\d+|[-+]?\d+),\s*([-+]?\d*\.\d+|[-+]?\d+)(?:,\s*[-+]?\d*\.\d+|[-+]?\d+)?", coord_text)
+            
+            for lon_str, lat_str in coord_pairs:
+                try:
+                    lon = float(lon_str)
+                    lat = float(lat_str)
                     all_coords.append((lon, lat))
+                except (ValueError, TypeError):
+                    continue
         
         if not all_coords:
             raise ValueError("All <coordinates> tags are empty.")
@@ -436,9 +444,10 @@ def run_pipeline():
         "longitude": [p[0] for p in interp_points]
     })
 
-    chain_excel = os.path.join(EXCEL_FOLDER, f"line_polygons_chainage.xlsx")
+    print("2) Saving chainage Excel...")
+    chain_excel = os.path.join(EXCEL_FOLDER, "chainage_points.xlsx")
     df_chain_to_segment_excel(df_chain, chain_excel)
-    print("-> Chainage Excel saved:", chain_excel)
+    print(f"  [OK] Saved: {chain_excel}")
 
     # NEW - Create chainage line KML (5m segments)
     chainage_kml_path = os.path.join(KML_MERGED_FOLDER, "line_polygons_chainage.kml")
@@ -464,14 +473,14 @@ def run_pipeline():
         offset_L.append((lon_l, lat_l))
         offset_R.append((lon_r, lat_r))
 
-    median_lhs_path = os.path.join(EXCEL_FOLDER, "Median_LHS.xlsx")
-    median_rhs_path = os.path.join(EXCEL_FOLDER, "Median_RHS.xlsx")
+    median_lhs_path = os.path.join(EXCEL_FOLDER, "median_lhs_offset.xlsx")
+    median_rhs_path = os.path.join(EXCEL_FOLDER, "median_rhs_offset.xlsx")
 
     df_median_lhs = save_offset_excel(df_chain, offset_L, median_lhs_path)
     df_median_rhs = save_offset_excel(df_chain, offset_R, median_rhs_path)
 
-    print("-> Median_LHS saved:", median_lhs_path)
-    print("-> Median_RHS saved:", median_rhs_path)
+    print(f"  [OK] Saved: {median_lhs_path}")
+    print(f"  [OK] Saved: {median_rhs_path}")
 
     # 3) Generate lane layers based on LANE_COUNT
     print(f"3) Generating lane layers for LANE_COUNT = {LANE_COUNT} ...")
@@ -563,4 +572,11 @@ def run_pipeline():
     }
 
 if __name__ == "__main__":
-    run_pipeline()
+    import traceback
+    try:
+        run_pipeline()
+    except Exception as e:
+        print("CRITICAL_PYTHON_ERROR_START")
+        traceback.print_exc()
+        print("CRITICAL_PYTHON_ERROR_END")
+        sys.exit(1)
