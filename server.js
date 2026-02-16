@@ -4,6 +4,7 @@ const bodyParser = require('body-parser');
 const fs = require('fs');
 const path = require('path');
 const multer = require('multer');
+const FormData = require('form-data');
 const archiver = require('archiver');
 const { kml } = require('@tmcw/togeojson');
 const { DOMParser } = require('xmldom');
@@ -416,6 +417,58 @@ const storage = multer.diskStorage({
     filename: (req, file, cb) => cb(null, file.originalname)
 });
 const upload = multer({ storage: storage });
+
+const distressStorage = multer.diskStorage({
+    destination: (req, file, cb) => {
+        const dir = path.join(__dirname, 'distress_uploads');
+        if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+        cb(null, dir);
+    },
+    filename: (req, file, cb) => cb(null, file.originalname)
+});
+const distressUpload = multer({ storage: distressStorage });
+
+app.post('/api/distress-report', distressUpload.single('file'), async (req, res) => {
+    try {
+        const { start_date, end_date } = req.query;
+
+        if (!req.file) {
+            return res.status(400).json({ detail: 'file is required' });
+        }
+
+        const params = new URLSearchParams();
+        if (start_date) params.set('start_date', start_date);
+        if (end_date) params.set('end_date', end_date);
+
+        const remoteUrl = `https://distress-kml.up.railway.app/road-distressSinglepipeline${params.toString() ? `?${params.toString()}` : ''}`;
+
+        const formData = new FormData();
+        formData.append('file', fs.createReadStream(req.file.path), {
+            filename: req.file.originalname,
+            contentType: req.file.mimetype
+        });
+
+        const response = await fetch(remoteUrl, {
+            method: 'POST',
+            body: formData,
+            headers: formData.getHeaders()
+        });
+
+        const text = await response.text();
+
+        try {
+            const json = JSON.parse(text);
+            res.status(response.status).json(json);
+        } catch {
+            res.status(response.status).send(text);
+        } finally {
+            fs.unlink(req.file.path, () => {});
+        }
+    } catch (error) {
+        console.error('Distress report proxy error:', error);
+        res.status(500).json({ detail: 'Internal error while generating distress report' });
+    }
+});
 
 app.post('/upload-kml', authenticateToken, upload.single('kmlFile'), async (req, res) => {
     try {
