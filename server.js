@@ -5,6 +5,7 @@ const fs = require('fs');
 const path = require('path');
 const multer = require('multer');
 const FormData = require('form-data');
+const axios = require('axios');
 const archiver = require('archiver');
 const { kml } = require('@tmcw/togeojson');
 const { DOMParser } = require('xmldom');
@@ -448,19 +449,20 @@ app.post('/api/distress-report', distressUpload.single('file'), async (req, res)
             contentType: req.file.mimetype
         });
 
-        const response = await fetch(remoteUrl, {
-            method: 'POST',
-            body: formData,
-            headers: formData.getHeaders()
-        });
-
-        const text = await response.text();
-
         try {
-            const json = JSON.parse(text);
-            res.status(response.status).json(json);
-        } catch {
-            res.status(response.status).send(text);
+            const response = await axios.post(remoteUrl, formData, {
+                headers: formData.getHeaders(),
+                maxBodyLength: Infinity,
+                maxContentLength: Infinity
+            });
+            res.status(response.status).json(response.data);
+        } catch (err) {
+            console.error('Distress API error:', err.response ? err.response.data : err.message);
+            if (err.response) {
+                res.status(err.response.status || 500).send(err.response.data);
+            } else {
+                res.status(500).json({ detail: 'Error calling distress API' });
+            }
         } finally {
             fs.unlink(req.file.path, () => {});
         }
