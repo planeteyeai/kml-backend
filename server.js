@@ -353,9 +353,9 @@ app.get('/download-folder', authenticateToken, (req, res) => {
     }
 });
 
-app.get('/pipeline-files/*', authenticateToken, (req, res) => {
+app.get('/pipeline-files/*filePath', authenticateToken, (req, res) => {
     const userDirs = getUserDirs(req.user.username);
-    const filePath = req.params[0];
+    const filePath = req.params.filePath || '';
     const fullPath = path.resolve(userDirs.pipelineDir, filePath);
     
     if (!fullPath.startsWith(userDirs.pipelineDir)) {
