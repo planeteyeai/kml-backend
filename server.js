@@ -107,7 +107,7 @@ app.post('/api/login', async (req, res) => {
             return res.status(401).json({ success: false, message: 'Invalid username or password' });
         }
 
-        const token = jwt.sign({ username }, JWT_SECRET, { expiresIn: '24h' });
+        const token = jwt.sign({ username }, JWT_SECRET);
         res.json({ success: true, token, username });
     } catch (error) {
         console.error('Login error:', error);
@@ -548,7 +548,15 @@ app.post('/upload-kml', authenticateToken, upload.single('kmlFile'), async (req,
             timestamp: new Date().toISOString()
         };
 
-        fs.writeFileSync(userDirs.dataFile, JSON.stringify([kmlData], null, 2));
+        let existing = [];
+        try {
+            existing = JSON.parse(fs.readFileSync(userDirs.dataFile, 'utf8')) || [];
+            if (!Array.isArray(existing)) existing = [];
+        } catch {
+            existing = [];
+        }
+        existing.push(kmlData);
+        fs.writeFileSync(userDirs.dataFile, JSON.stringify(existing, null, 2));
         const pipelinePath = await saveToPipeline(kmlData.metadata, kmlContent, userDirs, true);
         
         if (!pipelinePath) {
@@ -577,7 +585,15 @@ app.post('/save', authenticateToken, async (req, res) => {
         const newData = req.body;
         newData.id = Date.now();
         newData.timestamp = new Date().toISOString();
-        fs.writeFileSync(userDirs.dataFile, JSON.stringify([newData], null, 2));
+        let existing = [];
+        try {
+            existing = JSON.parse(fs.readFileSync(userDirs.dataFile, 'utf8')) || [];
+            if (!Array.isArray(existing)) existing = [];
+        } catch {
+            existing = [];
+        }
+        existing.push(newData);
+        fs.writeFileSync(userDirs.dataFile, JSON.stringify(existing, null, 2));
         
         const pipelinePath = await saveToPipeline(newData.metadata, newData.geometry, userDirs, false);
         
