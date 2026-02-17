@@ -4,6 +4,8 @@ const bodyParser = require('body-parser');
 const fs = require('fs');
 const path = require('path');
 const multer = require('multer');
+const FormData = require('form-data');
+const axios = require('axios');
 const archiver = require('archiver');
 const { kml } = require('@tmcw/togeojson');
 const { DOMParser } = require('xmldom');
@@ -59,7 +61,7 @@ ensureDirectories();
 app.use(cors({
     origin: ["https://kml-frontend-production.up.railway.app", "http://localhost:3000"],
     methods: ["GET","POST","PUT","DELETE"],
-    allowedHeaders: ["Content-Type"]
+    allowedHeaders: ["Content-Type", "Authorization"]
 }));
 
 app.use(bodyParser.json({ limit: '50mb' }));
@@ -353,9 +355,9 @@ app.get('/download-folder', authenticateToken, (req, res) => {
     }
 });
 
-app.get('/pipeline-files/*', authenticateToken, (req, res) => {
+app.get('/pipeline-files/*filePath', authenticateToken, (req, res) => {
     const userDirs = getUserDirs(req.user.username);
-    const filePath = req.params[0];
+    const filePath = req.params.filePath || '';
     const fullPath = path.resolve(userDirs.pipelineDir, filePath);
     
     if (!fullPath.startsWith(userDirs.pipelineDir)) {
@@ -416,6 +418,109 @@ const storage = multer.diskStorage({
     filename: (req, file, cb) => cb(null, file.originalname)
 });
 const upload = multer({ storage: storage });
+
+const distressStorage = multer.diskStorage({
+    destination: (req, file, cb) => {
+        const dir = path.join(__dirname, 'distress_uploads');
+        if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+        cb(null, dir);
+    },
+    filename: (req, file, cb) => cb(null, file.originalname)
+});
+const distressUpload = multer({ storage: distressStorage });
+
+app.post('/api/distress-report', distressUpload.single('file'), async (req, res) => {
+    try {
+        const { start_date, end_date } = req.query;
+
+        if (!req.file) {
+            return res.status(400).json({ detail: 'file is required' });
+        }
+
+        const params = new URLSearchParams();
+        if (start_date) params.set('start_date', start_date);
+        if (end_date) params.set('end_date', end_date);
+
+        const remoteUrl = `https://distress-kml.up.railway.app/road-distressSinglepipeline${params.toString() ? `?${params.toString()}` : ''}`;
+
+        const formData = new FormData();
+        formData.append('file', fs.createReadStream(req.file.path), {
+            filename: req.file.originalname,
+            contentType: req.file.mimetype
+        });
+
+        try {
+            const response = await axios.post(remoteUrl, formData, {
+                headers: formData.getHeaders(),
+                maxBodyLength: Infinity,
+                maxContentLength: Infinity
+            });
+            res.status(response.status).json(response.data);
+        } catch (err) {
+            console.error('Distress API error:', err.response ? err.response.data : err.message);
+            if (err.response) {
+                res.status(err.response.status || 500).send(err.response.data);
+            } else {
+                res.status(500).json({ detail: 'Error calling distress API' });
+            }
+        } finally {
+            fs.unlink(req.file.path, () => {});
+        }
+    } catch (error) {
+        console.error('Distress report proxy error:', error);
+        res.status(500).json({ detail: 'Internal error while generating distress report' });
+    }
+});
+
+app.post('/api/distress-predicted', distressUpload.single('file'), async (req, res) => {
+    try {
+        const { start_date, end_date } = req.body;
+
+        if (!req.file) {
+            return res.status(400).json({ detail: 'file is required' });
+        }
+
+        const remoteUrl = 'https://distress-kml.up.railway.app/detect-predicted_distress-combined/';
+
+        const formData = new FormData();
+        if (start_date) formData.append('start_date', start_date);
+        if (end_date) formData.append('end_date', end_date);
+        formData.append('kml', fs.createReadStream(req.file.path), {
+            filename: req.file.originalname,
+            contentType: req.file.mimetype
+        });
+
+        try {
+            const response = await axios.post(remoteUrl, formData, {
+                headers: {
+                    ...formData.getHeaders(),
+                    accept: 'application/json'
+                },
+                maxBodyLength: Infinity,
+                maxContentLength: Infinity,
+                responseType: 'arraybuffer'
+            });
+
+            res.setHeader('Content-Type', response.headers['content-type'] || 'text/csv');
+            if (response.headers['content-disposition']) {
+                res.setHeader('Content-Disposition', response.headers['content-disposition']);
+            }
+            res.status(response.status).send(response.data);
+        } catch (err) {
+            console.error('Distress Predicted API error:', err.response ? err.response.data : err.message);
+            if (err.response) {
+                res.status(err.response.status || 500).send(err.response.data);
+            } else {
+                res.status(500).json({ detail: 'Error calling distress predicted API' });
+            }
+        } finally {
+            fs.unlink(req.file.path, () => {});
+        }
+    } catch (error) {
+        console.error('Distress predicted proxy error:', error);
+        res.status(500).json({ detail: 'Internal error while generating distress predicted report' });
+    }
+});
 
 app.post('/upload-kml', authenticateToken, upload.single('kmlFile'), async (req, res) => {
     try {
