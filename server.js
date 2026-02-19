@@ -480,11 +480,13 @@ app.post('/api/distress-predicted', distressUpload.single('file'), async (req, r
             return res.status(400).json({ detail: 'file is required' });
         }
 
-        const remoteUrl = 'https://distress-kml.up.railway.app/detect-distress-final_predicted/';
+        const queryParams = new URLSearchParams();
+        if (start_date) queryParams.set('start_date', start_date);
+        if (end_date) queryParams.set('end_date', end_date);
+
+        const remoteUrl = `https://distress-kml.up.railway.app/detect-distress-final_predicted/?${queryParams.toString()}`;
 
         const formData = new FormData();
-        if (start_date) formData.append('start_date', start_date);
-        if (end_date) formData.append('end_date', end_date);
         formData.append('kml', fs.createReadStream(req.file.path), {
             filename: req.file.originalname,
             contentType: req.file.mimetype
@@ -533,12 +535,14 @@ app.post('/api/distress-final-predicted', distressUpload.single('file'), async (
             return res.status(400).json({ detail: 'file is required' });
         }
 
-        const remoteUrl = 'https://distress-kml.up.railway.app/detect-distress-final_predicted/';
+        const queryParams = new URLSearchParams();
+        if (startDate) queryParams.set('start_date', startDate);
+        if (endDate) queryParams.set('end_date', endDate);
+        if (projectName) queryParams.set('project_name', projectName);
+
+        const remoteUrl = `https://distress-kml.up.railway.app/detect-distress-final_predicted/?${queryParams.toString()}`;
 
         const formData = new FormData();
-        if (startDate) formData.append('start_date', startDate);
-        if (endDate) formData.append('end_date', endDate);
-        if (projectName) formData.append('project_name', projectName);
         formData.append('file', fs.createReadStream(req.file.path), {
             filename: req.file.originalname,
             contentType: req.file.mimetype
@@ -594,14 +598,16 @@ app.post('/api/distress-fullpipeline', distressUpload.single('file'), async (req
             return res.status(400).json({ detail: 'file is required' });
         }
 
-        const primaryPost = 'https://distress-kml.up.railway.app/road-distress-fullpipeline_reported';
-        const fallbackPost = 'https://distress-kml.up.railway.app/road-distressFullpipeline/';
+        const queryParams = new URLSearchParams();
+        if (startDate) queryParams.set('start_date', startDate);
+        if (endDate) queryParams.set('end_date', endDate);
+        if (projectName) queryParams.set('project_name', projectName);
+
+        const primaryPost = `https://distress-kml.up.railway.app/road-distress-fullpipeline_reported?${queryParams.toString()}`;
+        const fallbackPost = `https://distress-kml.up.railway.app/road-distressFullpipeline/?${queryParams.toString()}`;
 
         // Build form data for remote POST
         const formData = new FormData();
-        if (startDate) formData.append('start_date', startDate);
-        if (endDate) formData.append('end_date', endDate);
-        if (projectName) formData.append('project_name', projectName);
         formData.append('file', fs.createReadStream(req.file.path), {
             filename: req.file.originalname,
             contentType: req.file.mimetype
