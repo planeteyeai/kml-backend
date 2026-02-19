@@ -431,31 +431,40 @@ const distressUpload = multer({ storage: distressStorage });
 
 app.post('/api/distress-report', distressUpload.single('file'), async (req, res) => {
     try {
-        const { start_date, end_date } = req.query;
+        const startDate = (req.body && req.body.start_date) || req.query.start_date || '';
+        const endDate = (req.body && req.body.end_date) || req.query.end_date || '';
+        const projectName = (req.body && req.body.project_name) || req.query.project_name || '';
 
         if (!req.file) {
             return res.status(400).json({ detail: 'file is required' });
         }
 
         const params = new URLSearchParams();
-        if (start_date) params.set('start_date', start_date);
-        if (end_date) params.set('end_date', end_date);
+        if (startDate) params.set('start_date', startDate);
+        if (endDate) params.set('end_date', endDate);
 
-        const remoteUrl = `https://distress-kml.up.railway.app/road-distressSinglepipeline${params.toString() ? `?${params.toString()}` : ''}`;
+        // Distress Report -> road-distress-fullpipeline_reported
+        const remoteUrl = `https://distress-kml.up.railway.app/road-distress-fullpipeline_reported?${params.toString()}`;
 
         const formData = new FormData();
         formData.append('file', fs.createReadStream(req.file.path), {
             filename: req.file.originalname,
             contentType: req.file.mimetype
         });
+        if (projectName) formData.append('project_name', projectName);
 
         try {
             const response = await axios.post(remoteUrl, formData, {
                 headers: formData.getHeaders(),
                 maxBodyLength: Infinity,
-                maxContentLength: Infinity
+                maxContentLength: Infinity,
+                responseType: 'arraybuffer'
             });
-            res.status(response.status).json(response.data);
+            res.setHeader('Content-Type', response.headers['content-type'] || 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+            if (response.headers['content-disposition']) {
+                res.setHeader('Content-Disposition', response.headers['content-disposition']);
+            }
+            res.status(response.status).send(response.data);
         } catch (err) {
             console.error('Distress API error:', err.response ? err.response.data : err.message);
             if (err.response) {
@@ -474,15 +483,17 @@ app.post('/api/distress-report', distressUpload.single('file'), async (req, res)
 
 app.post('/api/distress-predicted', distressUpload.single('file'), async (req, res) => {
     try {
-        const { start_date, end_date } = req.body;
+        const startDate = (req.body && req.body.start_date) || req.query.start_date || '';
+        const endDate = (req.body && req.body.end_date) || req.query.end_date || '';
+        const projectName = (req.body && req.body.project_name) || req.query.project_name || '';
 
         if (!req.file) {
             return res.status(400).json({ detail: 'file is required' });
         }
 
         const queryParams = new URLSearchParams();
-        if (start_date) queryParams.set('start_date', start_date);
-        if (end_date) queryParams.set('end_date', end_date);
+        if (startDate) queryParams.set('start_date', startDate);
+        if (endDate) queryParams.set('end_date', endDate);
 
         const remoteUrl = `https://distress-kml.up.railway.app/detect-distress-final_predicted/?${queryParams.toString()}`;
 
@@ -491,6 +502,7 @@ app.post('/api/distress-predicted', distressUpload.single('file'), async (req, r
             filename: req.file.originalname,
             contentType: req.file.mimetype
         });
+        if (projectName) formData.append('project_name', projectName);
 
         try {
             const response = await axios.post(remoteUrl, formData, {
@@ -552,6 +564,7 @@ app.post('/api/distress-final-predicted', distressUpload.single('file'), async (
             filename: req.file.originalname,
             contentType: req.file.mimetype
         });
+        if (projectName) formData.append('project_name', projectName);
 
         try {
             const response = await axios.post(remoteUrl, formData, {
@@ -612,6 +625,7 @@ app.post('/api/distress-fullpipeline', distressUpload.single('file'), async (req
             filename: req.file.originalname,
             contentType: req.file.mimetype
         });
+        if (projectName) formData.append('project_name', projectName);
 
         // Helper to stream a GET download to the client
         const streamDownload = async (baseUrl) => {
