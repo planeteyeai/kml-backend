@@ -634,6 +634,7 @@ app.post('/api/distress-fullpipeline', distressUpload.single('file'), async (req
                 headers: formData.getHeaders(),
                 maxBodyLength: Infinity,
                 maxContentLength: Infinity,
+                responseType: 'arraybuffer',
                 validateStatus: () => true // we will handle 3xx/4xx
             });
 
@@ -660,6 +661,7 @@ app.post('/api/distress-fullpipeline', distressUpload.single('file'), async (req
                     headers: formData.getHeaders(),
                     maxBodyLength: Infinity,
                     maxContentLength: Infinity,
+                    responseType: 'arraybuffer',
                     validateStatus: () => true
                 });
                 if (postResp2.status >= 300 && postResp2.status < 400) {
