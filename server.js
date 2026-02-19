@@ -30,18 +30,18 @@ function getUserDirs(username) {
     const uploadsDir = path.join(userDir, 'uploads');
     const pipelineDir = path.join(userDir, 'pipeline');
     const dataFile = path.join(userDir, 'drawn_data.json');
-    
+
     if (!fs.existsSync(userDir)) fs.mkdirSync(userDir, { recursive: true });
     if (!fs.existsSync(uploadsDir)) fs.mkdirSync(uploadsDir, { recursive: true });
     if (!fs.existsSync(pipelineDir)) fs.mkdirSync(pipelineDir, { recursive: true });
     if (!fs.existsSync(dataFile)) fs.writeFileSync(dataFile, JSON.stringify([]));
-    
+
     // Ensure pipeline subdirs exist for this user
     PIPELINE_SUBDIRS.forEach(sub => {
         const subPath = path.join(pipelineDir, sub);
         if (!fs.existsSync(subPath)) fs.mkdirSync(subPath, { recursive: true });
     });
-    
+
     return { userDir, uploadsDir, pipelineDir, dataFile };
 }
 
@@ -60,7 +60,7 @@ ensureDirectories();
 
 app.use(cors({
     origin: ["https://kml-frontend-production.up.railway.app", "http://localhost:3000"],
-    methods: ["GET","POST","PUT","DELETE"],
+    methods: ["GET", "POST", "PUT", "DELETE"],
     allowedHeaders: ["Content-Type", "Authorization"]
 }));
 
@@ -153,7 +153,7 @@ function geojsonToKml(features, name) {
         const geom = feature.geometry;
         const props = feature.properties || {};
         const featName = props.name || `Feature ${index + 1}`;
-        
+
         kml += `
     <Placemark>
       <name>${featName}</name>
@@ -181,7 +181,7 @@ function geojsonToKml(features, name) {
             <coordinates>${outerCoords}</coordinates>
           </LinearRing>
         </outerBoundaryIs>`;
-            
+
             if (geom.coordinates.length > 1) {
                 for (let i = 1; i < geom.coordinates.length; i++) {
                     const innerCoords = geom.coordinates[i].map(c => `${c[0]},${c[1]},0`).join(' ');
@@ -223,7 +223,7 @@ async function processWithPython(metadata, kmlContent, userDirs) {
 
             // 2. Resolve Python path
             let pythonExe = 'python3';
-            
+
             // Check for virtual environment path (Railway/Docker)
             const venvPath = '/opt/venv/bin/python';
             if (fs.existsSync(venvPath)) {
@@ -280,18 +280,18 @@ async function processWithPython(metadata, kmlContent, userDirs) {
                 if (code !== 0) {
                     const errorMsg = stderrData || stdoutData || 'Unknown error';
                     fs.writeFileSync(errLogPath, `EXIT CODE ${code}\n\n${errorMsg}`);
-                    
+
                     // Check for our custom error markers
                     const errorMatch = errorMsg.match(/CRITICAL_PYTHON_ERROR_START([\s\S]*)CRITICAL_PYTHON_ERROR_END/);
                     const specificError = errorMatch ? errorMatch[1].trim() : errorMsg;
-                    
+
                     return reject(new Error(`Python script failed (Code ${code}): ${specificError}`));
                 }
 
                 // 5. Verification: Check if folders actually contain files
                 const excelsDir = path.join(userDirs.pipelineDir, 'Excels');
                 const mergeDir = path.join(userDirs.pipelineDir, 'Merge_KMLs');
-                
+
                 const hasExcels = fs.existsSync(excelsDir) && fs.readdirSync(excelsDir).length > 0;
                 const hasKmls = fs.existsSync(mergeDir) && fs.readdirSync(mergeDir).length > 0;
 
@@ -327,7 +327,7 @@ async function saveToPipeline(metadata, content, userDirs, isKmlContent = false)
 app.get('/download-folder', authenticateToken, (req, res) => {
     const userDirs = getUserDirs(req.user.username);
     const folderPath = req.query.path || '';
-    
+
     try {
         const targetPath = path.resolve(userDirs.pipelineDir, folderPath);
 
@@ -359,11 +359,11 @@ app.get('/pipeline-files/*filePath', authenticateToken, (req, res) => {
     const userDirs = getUserDirs(req.user.username);
     const filePath = req.params.filePath || '';
     const fullPath = path.resolve(userDirs.pipelineDir, filePath);
-    
+
     if (!fullPath.startsWith(userDirs.pipelineDir)) {
         return res.status(403).json({ success: false, message: 'Access denied' });
     }
-    
+
     if (fs.existsSync(fullPath) && fs.statSync(fullPath).isFile()) {
         res.sendFile(fullPath);
     } else {
@@ -376,7 +376,7 @@ app.get('/pipeline-folders', authenticateToken, (req, res) => {
         const userDirs = getUserDirs(req.user.username);
         const subPath = req.query.path || '';
         const currentPath = path.resolve(userDirs.pipelineDir, subPath);
-        
+
         if (!currentPath.startsWith(userDirs.pipelineDir)) {
             return res.status(403).json({ success: false, message: 'Access denied' });
         }
@@ -396,13 +396,13 @@ app.get('/pipeline-folders', authenticateToken, (req, res) => {
                 modifiedAt: stats.mtime
             };
         });
-        
+
         contents.sort((a, b) => {
             if (a.type === 'folder' && b.type !== 'folder') return -1;
             if (a.type !== 'folder' && b.type === 'folder') return 1;
             return new Date(b.modifiedAt) - new Date(a.modifiedAt);
         });
-        
+
         res.json({ success: true, items: contents, currentPath: subPath });
     } catch (error) {
         res.status(500).json({ success: false, message: 'Error listing folders' });
@@ -464,7 +464,7 @@ app.post('/api/distress-report', distressUpload.single('file'), async (req, res)
                 res.status(500).json({ detail: 'Error calling distress API' });
             }
         } finally {
-            fs.unlink(req.file.path, () => {});
+            fs.unlink(req.file.path, () => { });
         }
     } catch (error) {
         console.error('Distress report proxy error:', error);
@@ -514,7 +514,7 @@ app.post('/api/distress-predicted', distressUpload.single('file'), async (req, r
                 res.status(500).json({ detail: 'Error calling distress predicted API' });
             }
         } finally {
-            fs.unlink(req.file.path, () => {});
+            fs.unlink(req.file.path, () => { });
         }
     } catch (error) {
         console.error('Distress predicted proxy error:', error);
@@ -575,7 +575,7 @@ app.post('/api/distress-final-predicted', distressUpload.single('file'), async (
                 res.status(500).json({ detail: 'Error calling distress final predicted API' });
             }
         } finally {
-            fs.unlink(req.file.path, () => {});
+            fs.unlink(req.file.path, () => { });
         }
     } catch (error) {
         console.error('Final predicted proxy error:', error);
@@ -594,7 +594,7 @@ app.post('/api/distress-fullpipeline', distressUpload.single('file'), async (req
             return res.status(400).json({ detail: 'file is required' });
         }
 
-        const primaryPost = 'https://distress-kml.up.railway.app/road-distress-fullpipeline/';
+        const primaryPost = 'https://distress-kml.up.railway.app/road-distress-fullpipeline_reported';
         const fallbackPost = 'https://distress-kml.up.railway.app/road-distressFullpipeline/';
 
         // Build form data for remote POST
@@ -639,7 +639,7 @@ app.post('/api/distress-fullpipeline', distressUpload.single('file'), async (req
 
             // If POST yields a redirect or no body, proceed to GET download
             if (postResp.status >= 300 && postResp.status < 400) {
-                await streamDownload('https://distress-kml.up.railway.app/road-distress-fullpipeline');
+                await streamDownload('https://distress-kml.up.railway.app/road-distress-fullpipeline_reported');
             } else if ((postResp.headers['content-type'] || '').includes('application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')) {
                 // Direct file from POST
                 res.setHeader('Content-Type', postResp.headers['content-type']);
@@ -651,7 +651,7 @@ app.post('/api/distress-fullpipeline', distressUpload.single('file'), async (req
                 res.status(postResp.status).send(postResp.data);
             } else {
                 // Fallback: try GET on primary
-                await streamDownload('https://distress-kml.up.railway.app/road-distress-fullpipeline');
+                await streamDownload('https://distress-kml.up.railway.app/road-distress-fullpipeline_reported');
             }
         } catch (err) {
             // Fallback to alternate path casing
@@ -684,7 +684,7 @@ app.post('/api/distress-fullpipeline', distressUpload.single('file'), async (req
                 }
             }
         } finally {
-            fs.unlink(req.file.path, () => {});
+            fs.unlink(req.file.path, () => { });
         }
     } catch (error) {
         console.error('Fullpipeline proxy error:', error);
@@ -695,10 +695,10 @@ app.post('/api/distress-fullpipeline', distressUpload.single('file'), async (req
 app.post('/upload-kml', authenticateToken, upload.single('kmlFile'), async (req, res) => {
     try {
         if (!req.file) return res.status(400).json({ success: false, message: 'No file uploaded' });
-        
+
         const userDirs = getUserDirs(req.user.username);
         const userFilePath = req.file.path; // Already in userDirs.uploadsDir
-        
+
         const kmlContent = fs.readFileSync(userFilePath, 'utf8');
         const kmlDom = new DOMParser().parseFromString(kmlContent);
         const geoJson = kml(kmlDom);
@@ -728,23 +728,23 @@ app.post('/upload-kml', authenticateToken, upload.single('kmlFile'), async (req,
         existing.push(kmlData);
         fs.writeFileSync(userDirs.dataFile, JSON.stringify(existing, null, 2));
         const pipelinePath = await saveToPipeline(kmlData.metadata, kmlContent, userDirs, true);
-        
+
         if (!pipelinePath) {
             throw new Error('Pipeline processing failed to return a valid path');
         }
 
-        res.json({ 
-            success: true, 
-            message: 'File uploaded and processed successfully', 
-            pipelinePath: pipelinePath, 
-            data: kmlData 
+        res.json({
+            success: true,
+            message: 'File uploaded and processed successfully',
+            pipelinePath: pipelinePath,
+            data: kmlData
         });
     } catch (error) {
         console.error('Upload-KML Error:', error);
-        res.status(500).json({ 
-            success: false, 
-            message: 'Error uploading and processing file', 
-            details: error.message 
+        res.status(500).json({
+            success: false,
+            message: 'Error uploading and processing file',
+            details: error.message
         });
     }
 });
@@ -764,25 +764,25 @@ app.post('/save', authenticateToken, async (req, res) => {
         }
         existing.push(newData);
         fs.writeFileSync(userDirs.dataFile, JSON.stringify(existing, null, 2));
-        
+
         const pipelinePath = await saveToPipeline(newData.metadata, newData.geometry, userDirs, false);
-        
+
         if (!pipelinePath) {
             throw new Error('Save operation failed to generate pipeline files');
         }
 
-        res.json({ 
-            success: true, 
-            message: 'Data saved and processed successfully', 
-            id: newData.id, 
-            pipelinePath: pipelinePath 
+        res.json({
+            success: true,
+            message: 'Data saved and processed successfully',
+            id: newData.id,
+            pipelinePath: pipelinePath
         });
     } catch (error) {
         console.error('Save Error:', error);
-        res.status(500).json({ 
-            success: false, 
-            message: 'Error saving and processing data', 
-            details: error.message 
+        res.status(500).json({
+            success: false,
+            message: 'Error saving and processing data',
+            details: error.message
         });
     }
 });
@@ -791,7 +791,7 @@ app.post('/clear-all', authenticateToken, async (req, res) => {
     try {
         const userDirs = getUserDirs(req.user.username);
         console.log(`Clearing all data for user: ${req.user.username}...`);
-        
+
         // 1. Clear user-specific data file
         if (fs.existsSync(userDirs.dataFile)) {
             try {
