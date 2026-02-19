@@ -480,7 +480,7 @@ app.post('/api/distress-predicted', distressUpload.single('file'), async (req, r
             return res.status(400).json({ detail: 'file is required' });
         }
 
-        const remoteUrl = 'https://distress-kml.up.railway.app/detect-predicted_distress-combined/';
+        const remoteUrl = 'https://distress-kml.up.railway.app/detect-distress-final_predicted/';
 
         const formData = new FormData();
         if (start_date) formData.append('start_date', start_date);
