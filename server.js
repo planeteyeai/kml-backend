@@ -107,7 +107,7 @@ app.post('/api/login', async (req, res) => {
             return res.status(401).json({ success: false, message: 'Invalid username or password' });
         }
 
-        const token = jwt.sign({ username }, JWT_SECRET, { expiresIn: '24h' });
+        const token = jwt.sign({ username }, JWT_SECRET);
         res.json({ success: true, token, username });
     } catch (error) {
         console.error('Login error:', error);
@@ -472,6 +472,226 @@ app.post('/api/distress-report', distressUpload.single('file'), async (req, res)
     }
 });
 
+app.post('/api/distress-predicted', distressUpload.single('file'), async (req, res) => {
+    try {
+        const { start_date, end_date } = req.body;
+
+        if (!req.file) {
+            return res.status(400).json({ detail: 'file is required' });
+        }
+
+        const remoteUrl = 'https://distress-kml.up.railway.app/detect-predicted_distress-combined/';
+
+        const formData = new FormData();
+        if (start_date) formData.append('start_date', start_date);
+        if (end_date) formData.append('end_date', end_date);
+        formData.append('kml', fs.createReadStream(req.file.path), {
+            filename: req.file.originalname,
+            contentType: req.file.mimetype
+        });
+
+        try {
+            const response = await axios.post(remoteUrl, formData, {
+                headers: {
+                    ...formData.getHeaders(),
+                    accept: 'application/json'
+                },
+                maxBodyLength: Infinity,
+                maxContentLength: Infinity,
+                responseType: 'arraybuffer'
+            });
+
+            res.setHeader('Content-Type', response.headers['content-type'] || 'text/csv');
+            if (response.headers['content-disposition']) {
+                res.setHeader('Content-Disposition', response.headers['content-disposition']);
+            }
+            res.status(response.status).send(response.data);
+        } catch (err) {
+            console.error('Distress Predicted API error:', err.response ? err.response.data : err.message);
+            if (err.response) {
+                res.status(err.response.status || 500).send(err.response.data);
+            } else {
+                res.status(500).json({ detail: 'Error calling distress predicted API' });
+            }
+        } finally {
+            fs.unlink(req.file.path, () => {});
+        }
+    } catch (error) {
+        console.error('Distress predicted proxy error:', error);
+        res.status(500).json({ detail: 'Internal error while generating distress predicted report' });
+    }
+});
+
+// Proxy for Final Predicted: accepts KML and dates, returns Excel blob directly
+app.post('/api/distress-final-predicted', distressUpload.single('file'), async (req, res) => {
+    try {
+        const startDate = (req.body && req.body.start_date) || req.query.start_date || '';
+        const endDate = (req.body && req.body.end_date) || req.query.end_date || '';
+        const projectName = (req.body && req.body.project_name) || req.query.project_name || '';
+
+        if (!req.file) {
+            return res.status(400).json({ detail: 'file is required' });
+        }
+
+        const remoteUrl = 'https://distress-kml.up.railway.app/detect-distress-final_predicted/';
+
+        const formData = new FormData();
+        if (startDate) formData.append('start_date', startDate);
+        if (endDate) formData.append('end_date', endDate);
+        if (projectName) formData.append('project_name', projectName);
+        formData.append('file', fs.createReadStream(req.file.path), {
+            filename: req.file.originalname,
+            contentType: req.file.mimetype
+        });
+        // Also append 'kml' for compatibility if server expects that field
+        formData.append('kml', fs.createReadStream(req.file.path), {
+            filename: req.file.originalname,
+            contentType: req.file.mimetype
+        });
+
+        try {
+            const response = await axios.post(remoteUrl, formData, {
+                headers: {
+                    ...formData.getHeaders(),
+                    accept: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
+                },
+                maxBodyLength: Infinity,
+                maxContentLength: Infinity,
+                responseType: 'arraybuffer'
+            });
+
+            res.setHeader('Content-Type', response.headers['content-type'] || 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+            if (response.headers['content-disposition']) {
+                res.setHeader('Content-Disposition', response.headers['content-disposition']);
+            } else {
+                res.setHeader('Content-Disposition', 'attachment; filename="distress_predicted_final.xlsx"');
+            }
+            res.status(response.status).send(response.data);
+        } catch (err) {
+            console.error('Distress Final Predicted API error:', err.response ? err.response.data : err.message);
+            if (err.response) {
+                res.status(err.response.status || 500).send(err.response.data);
+            } else {
+                res.status(500).json({ detail: 'Error calling distress final predicted API' });
+            }
+        } finally {
+            fs.unlink(req.file.path, () => {});
+        }
+    } catch (error) {
+        console.error('Final predicted proxy error:', error);
+        res.status(500).json({ detail: 'Internal error while generating final predicted report' });
+    }
+});
+
+// Proxy for Full Pipeline: accepts KML and dates, returns Excel blob directly
+app.post('/api/distress-fullpipeline', distressUpload.single('file'), async (req, res) => {
+    try {
+        const startDate = (req.body && req.body.start_date) || req.query.start_date || '';
+        const endDate = (req.body && req.body.end_date) || req.query.end_date || '';
+        const projectName = (req.body && req.body.project_name) || req.query.project_name || '';
+
+        if (!req.file) {
+            return res.status(400).json({ detail: 'file is required' });
+        }
+
+        const primaryPost = 'https://distress-kml.up.railway.app/road-distress-fullpipeline/';
+        const fallbackPost = 'https://distress-kml.up.railway.app/road-distressFullpipeline/';
+
+        // Build form data for remote POST
+        const formData = new FormData();
+        if (startDate) formData.append('start_date', startDate);
+        if (endDate) formData.append('end_date', endDate);
+        if (projectName) formData.append('project_name', projectName);
+        formData.append('file', fs.createReadStream(req.file.path), {
+            filename: req.file.originalname,
+            contentType: req.file.mimetype
+        });
+
+        // Helper to stream a GET download to the client
+        const streamDownload = async (baseUrl) => {
+            const params = new URLSearchParams();
+            if (startDate) params.set('start_date', startDate);
+            if (endDate) params.set('end_date', endDate);
+            const url = `${baseUrl}?${params.toString()}`;
+            const response = await axios.get(url, {
+                responseType: 'arraybuffer',
+                headers: {
+                    accept: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
+                }
+            });
+            res.setHeader('Content-Type', response.headers['content-type'] || 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+            if (response.headers['content-disposition']) {
+                res.setHeader('Content-Disposition', response.headers['content-disposition']);
+            } else {
+                res.setHeader('Content-Disposition', 'attachment; filename="distress_report.xlsx"');
+            }
+            res.status(response.status).send(response.data);
+        };
+
+        try {
+            // Try primary POST; follow 3xx by manual GET
+            const postResp = await axios.post(primaryPost, formData, {
+                headers: formData.getHeaders(),
+                maxBodyLength: Infinity,
+                maxContentLength: Infinity,
+                validateStatus: () => true // we will handle 3xx/4xx
+            });
+
+            // If POST yields a redirect or no body, proceed to GET download
+            if (postResp.status >= 300 && postResp.status < 400) {
+                await streamDownload('https://distress-kml.up.railway.app/road-distress-fullpipeline');
+            } else if ((postResp.headers['content-type'] || '').includes('application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')) {
+                // Direct file from POST
+                res.setHeader('Content-Type', postResp.headers['content-type']);
+                if (postResp.headers['content-disposition']) {
+                    res.setHeader('Content-Disposition', postResp.headers['content-disposition']);
+                } else {
+                    res.setHeader('Content-Disposition', 'attachment; filename="distress_report.xlsx"');
+                }
+                res.status(postResp.status).send(postResp.data);
+            } else {
+                // Fallback: try GET on primary
+                await streamDownload('https://distress-kml.up.railway.app/road-distress-fullpipeline');
+            }
+        } catch (err) {
+            // Fallback to alternate path casing
+            try {
+                const postResp2 = await axios.post(fallbackPost, formData, {
+                    headers: formData.getHeaders(),
+                    maxBodyLength: Infinity,
+                    maxContentLength: Infinity,
+                    validateStatus: () => true
+                });
+                if (postResp2.status >= 300 && postResp2.status < 400) {
+                    await streamDownload('https://distress-kml.up.railway.app/road-distressFullpipeline');
+                } else if ((postResp2.headers['content-type'] || '').includes('application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')) {
+                    res.setHeader('Content-Type', postResp2.headers['content-type']);
+                    if (postResp2.headers['content-disposition']) {
+                        res.setHeader('Content-Disposition', postResp2.headers['content-disposition']);
+                    } else {
+                        res.setHeader('Content-Disposition', 'attachment; filename="distress_report.xlsx"');
+                    }
+                    res.status(postResp2.status).send(postResp2.data);
+                } else {
+                    await streamDownload('https://distress-kml.up.railway.app/road-distressFullpipeline');
+                }
+            } catch (err2) {
+                console.error('Distress Fullpipeline proxy error:', err2.response ? err2.response.data : err2.message);
+                if (err2.response) {
+                    res.status(err2.response.status || 500).send(err2.response.data);
+                } else {
+                    res.status(500).json({ detail: 'Error calling distress fullpipeline API' });
+                }
+            }
+        } finally {
+            fs.unlink(req.file.path, () => {});
+        }
+    } catch (error) {
+        console.error('Fullpipeline proxy error:', error);
+        res.status(500).json({ detail: 'Internal error while generating distress fullpipeline report' });
+    }
+});
+
 app.post('/upload-kml', authenticateToken, upload.single('kmlFile'), async (req, res) => {
     try {
         if (!req.file) return res.status(400).json({ success: false, message: 'No file uploaded' });
@@ -498,7 +718,15 @@ app.post('/upload-kml', authenticateToken, upload.single('kmlFile'), async (req,
             timestamp: new Date().toISOString()
         };
 
-        fs.writeFileSync(userDirs.dataFile, JSON.stringify([kmlData], null, 2));
+        let existing = [];
+        try {
+            existing = JSON.parse(fs.readFileSync(userDirs.dataFile, 'utf8')) || [];
+            if (!Array.isArray(existing)) existing = [];
+        } catch {
+            existing = [];
+        }
+        existing.push(kmlData);
+        fs.writeFileSync(userDirs.dataFile, JSON.stringify(existing, null, 2));
         const pipelinePath = await saveToPipeline(kmlData.metadata, kmlContent, userDirs, true);
         
         if (!pipelinePath) {
@@ -527,7 +755,15 @@ app.post('/save', authenticateToken, async (req, res) => {
         const newData = req.body;
         newData.id = Date.now();
         newData.timestamp = new Date().toISOString();
-        fs.writeFileSync(userDirs.dataFile, JSON.stringify([newData], null, 2));
+        let existing = [];
+        try {
+            existing = JSON.parse(fs.readFileSync(userDirs.dataFile, 'utf8')) || [];
+            if (!Array.isArray(existing)) existing = [];
+        } catch {
+            existing = [];
+        }
+        existing.push(newData);
+        fs.writeFileSync(userDirs.dataFile, JSON.stringify(existing, null, 2));
         
         const pipelinePath = await saveToPipeline(newData.metadata, newData.geometry, userDirs, false);
         
