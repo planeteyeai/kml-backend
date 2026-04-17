@@ -337,31 +337,32 @@ function getRequestBaseUrl(req) {
 
 function getMergeImageEntries(username) {
     const userDirs = getUserDirs(username);
-    const imageConfigs = [
-        { key: 'lhs', folder: path.join(userDirs.pipelineDir, 'LHS_KMLs', 'LHS_kml_merge_images') },
-        { key: 'rhs', folder: path.join(userDirs.pipelineDir, 'RHS_KMLs', 'RHS_kml_merge_images') }
-    ];
-
     const imageExtRegex = /\.(png|jpe?g|gif|webp|bmp)$/i;
-    const images = imageConfigs.flatMap(({ key, folder }) => {
-        if (!fs.existsSync(folder) || !fs.statSync(folder).isDirectory()) {
-            return [];
-        }
+    const images = [];
 
-        return fs.readdirSync(folder)
-            .filter((fileName) => imageExtRegex.test(fileName))
-            .map((fileName) => {
-                const absolutePath = path.join(folder, fileName);
-                const stats = fs.statSync(absolutePath);
-                return {
-                    side: key,
-                    fileName,
-                    size: stats.size,
-                    modifiedAt: stats.mtime,
-                    absolutePath
-                };
-            });
-    });
+    const lhsImagesRoot = path.join(userDirs.pipelineDir, 'LHS_KMLs', 'LHS_images');
+    if (fs.existsSync(lhsImagesRoot) && fs.statSync(lhsImagesRoot).isDirectory()) {
+        const entries = fs.readdirSync(lhsImagesRoot, { withFileTypes: true });
+        entries.forEach((entry) => {
+            if (!entry.isDirectory()) return;
+            const laneName = entry.name;
+            const laneDir = path.join(lhsImagesRoot, laneName);
+            fs.readdirSync(laneDir)
+                .filter((fileName) => imageExtRegex.test(fileName))
+                .forEach((fileName) => {
+                    const absolutePath = path.join(laneDir, fileName);
+                    const stats = fs.statSync(absolutePath);
+                    images.push({
+                        side: 'lhs',
+                        lane: laneName,
+                        fileName,
+                        size: stats.size,
+                        modifiedAt: stats.mtime,
+                        absolutePath
+                    });
+                });
+        });
+    }
 
     images.sort((a, b) => new Date(b.modifiedAt) - new Date(a.modifiedAt));
     return images;
@@ -461,11 +462,12 @@ app.get('/api/merge-images/:username', (req, res) => {
         const baseUrl = getRequestBaseUrl(req);
         const images = getMergeImageEntries(username).map((img) => ({
             side: img.side,
+            lane: img.lane,
             fileName: img.fileName,
             size: img.size,
             modifiedAt: img.modifiedAt,
-            url: `/api/merge-images/${encodeURIComponent(username)}/${img.side}/${encodeURIComponent(img.fileName)}`,
-            publicUrl: `${baseUrl}/api/merge-images/${encodeURIComponent(username)}/${img.side}/${encodeURIComponent(img.fileName)}`
+            url: `/api/public-image?path=${encodeURIComponent(img.absolutePath)}`,
+            publicUrl: `${baseUrl}/api/public-image?path=${encodeURIComponent(img.absolutePath)}`
         }));
 
         return res.json({ success: true, username, count: images.length, images });
@@ -968,11 +970,12 @@ app.post('/upload-kml', authenticateToken, upload.single('kmlFile'), async (req,
 
         const mergeImages = getMergeImageEntries(req.user.username).map((img) => ({
             side: img.side,
+            lane: img.lane,
             fileName: img.fileName,
             size: img.size,
             modifiedAt: img.modifiedAt,
-            url: `/api/merge-images/${encodeURIComponent(req.user.username)}/${img.side}/${encodeURIComponent(img.fileName)}`,
-            publicUrl: `${baseUrl}/api/merge-images/${encodeURIComponent(req.user.username)}/${img.side}/${encodeURIComponent(img.fileName)}`,
+            url: `/api/public-image?path=${encodeURIComponent(img.absolutePath)}`,
+            publicUrl: `${baseUrl}/api/public-image?path=${encodeURIComponent(img.absolutePath)}`,
             absolutePath: img.absolutePath
         }));
 
@@ -1020,11 +1023,12 @@ app.post('/save', authenticateToken, async (req, res) => {
 
         const mergeImages = getMergeImageEntries(req.user.username).map((img) => ({
             side: img.side,
+            lane: img.lane,
             fileName: img.fileName,
             size: img.size,
             modifiedAt: img.modifiedAt,
-            url: `/api/merge-images/${encodeURIComponent(req.user.username)}/${img.side}/${encodeURIComponent(img.fileName)}`,
-            publicUrl: `${baseUrl}/api/merge-images/${encodeURIComponent(req.user.username)}/${img.side}/${encodeURIComponent(img.fileName)}`,
+            url: `/api/public-image?path=${encodeURIComponent(img.absolutePath)}`,
+            publicUrl: `${baseUrl}/api/public-image?path=${encodeURIComponent(img.absolutePath)}`,
             absolutePath: img.absolutePath
         }));
 
