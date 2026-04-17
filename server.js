@@ -137,23 +137,15 @@ app.post('/api/login', async (req, res) => {
     }
 });
 
-// Middleware to verify JWT token
+// Authentication disabled: accept requests without token and resolve a username
+// from request context. This keeps per-user folders separate without JWT.
 const authenticateToken = (req, res, next) => {
-    const authHeader = req.headers['authorization'];
-    let token = authHeader && authHeader.split(' ')[1];
-
-    // Fallback to query parameter for downloads/file viewing
-    if (!token && req.query.token) {
-        token = req.query.token;
-    }
-
-    if (!token) return res.status(401).json({ success: false, message: 'Token required' });
-
-    jwt.verify(token, JWT_SECRET, (err, user) => {
-        if (err) return res.status(403).json({ success: false, message: 'Invalid token' });
-        req.user = user;
-        next();
-    });
+    const bodyUsername = req.body && typeof req.body.username === 'string' ? req.body.username.trim() : '';
+    const queryUsername = req.query && typeof req.query.username === 'string' ? req.query.username.trim() : '';
+    const headerUsername = req.headers['x-username'] ? String(req.headers['x-username']).trim() : '';
+    const resolvedUsername = bodyUsername || queryUsername || headerUsername || 'local-user';
+    req.user = { username: resolvedUsername };
+    next();
 };
 
 
