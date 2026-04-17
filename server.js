@@ -330,6 +330,10 @@ async function saveToPipeline(metadata, content, userDirs, isKmlContent = false)
 }
 
 function getRequestBaseUrl(req) {
+    const configuredBaseUrl = (process.env.PUBLIC_BASE_URL || 'https://kml-backend-production-501c.up.railway.app').trim();
+    if (configuredBaseUrl) {
+        return configuredBaseUrl.replace(/\/+$/, '');
+    }
     const protocol = (req.headers['x-forwarded-proto'] || req.protocol || 'http').split(',')[0].trim();
     const host = req.get('host');
     return `${protocol}://${host}`;
@@ -339,30 +343,42 @@ function getMergeImageEntries(username) {
     const userDirs = getUserDirs(username);
     const imageExtRegex = /\.(png|jpe?g|gif|webp|bmp)$/i;
     const images = [];
+    const addImageEntry = (absolutePath, side, lane) => {
+        const stats = fs.statSync(absolutePath);
+        images.push({
+            side,
+            lane,
+            fileName: path.basename(absolutePath),
+            size: stats.size,
+            modifiedAt: stats.mtime,
+            absolutePath
+        });
+    };
 
-    const lhsImagesRoot = path.join(userDirs.pipelineDir, 'LHS_KMLs', 'LHS_images');
-    if (fs.existsSync(lhsImagesRoot) && fs.statSync(lhsImagesRoot).isDirectory()) {
-        const entries = fs.readdirSync(lhsImagesRoot, { withFileTypes: true });
+    const addLaneImages = (rootDir, side) => {
+        if (!fs.existsSync(rootDir) || !fs.statSync(rootDir).isDirectory()) return;
+        const entries = fs.readdirSync(rootDir, { withFileTypes: true });
         entries.forEach((entry) => {
             if (!entry.isDirectory()) return;
             const laneName = entry.name;
-            const laneDir = path.join(lhsImagesRoot, laneName);
+            const laneDir = path.join(rootDir, laneName);
             fs.readdirSync(laneDir)
                 .filter((fileName) => imageExtRegex.test(fileName))
-                .forEach((fileName) => {
-                    const absolutePath = path.join(laneDir, fileName);
-                    const stats = fs.statSync(absolutePath);
-                    images.push({
-                        side: 'lhs',
-                        lane: laneName,
-                        fileName,
-                        size: stats.size,
-                        modifiedAt: stats.mtime,
-                        absolutePath
-                    });
-                });
+                .forEach((fileName) => addImageEntry(path.join(laneDir, fileName), side, laneName));
         });
-    }
+    };
+
+    const addFlatImages = (rootDir, side, laneLabel) => {
+        if (!fs.existsSync(rootDir) || !fs.statSync(rootDir).isDirectory()) return;
+        fs.readdirSync(rootDir, { withFileTypes: true })
+            .filter((entry) => entry.isFile() && imageExtRegex.test(entry.name))
+            .forEach((entry) => addImageEntry(path.join(rootDir, entry.name), side, laneLabel));
+    };
+
+    addLaneImages(path.join(userDirs.pipelineDir, 'LHS_KMLs', 'LHS_images'), 'lhs');
+    addLaneImages(path.join(userDirs.pipelineDir, 'RHS_KMLs', 'RHS_images'), 'rhs');
+    addFlatImages(path.join(userDirs.pipelineDir, 'LHS_KMLs', 'LHS_kml_merge_images'), 'lhs', 'MERGED');
+    addFlatImages(path.join(userDirs.pipelineDir, 'RHS_KMLs', 'RHS_kml_merge_images'), 'rhs', 'MERGED');
 
     images.sort((a, b) => new Date(b.modifiedAt) - new Date(a.modifiedAt));
     return images;
