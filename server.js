@@ -53,10 +53,18 @@ const PIPELINE_SUBDIRS = ['LHS_KMLs', 'RHS_KMLs', 'Excels', 'Merge_KMLs'];
 
 // Ensure base directories exist
 function ensureDirectories() {
-    if (!fs.existsSync(DATA_DIR)) fs.mkdirSync(DATA_DIR);
-    if (!fs.existsSync(USERS_FILE)) fs.writeFileSync(USERS_FILE, JSON.stringify([]));
     const usersBaseDir = path.join(DATA_DIR, 'users');
-    if (!fs.existsSync(usersBaseDir)) fs.mkdirSync(usersBaseDir);
+    try {
+        // Railway/container startup can race with volume mount readiness.
+        // Use recursive creation and explicit logs so path issues are visible in deploy logs.
+        fs.mkdirSync(DATA_DIR, { recursive: true });
+        fs.mkdirSync(usersBaseDir, { recursive: true });
+        if (!fs.existsSync(USERS_FILE)) fs.writeFileSync(USERS_FILE, JSON.stringify([]));
+        console.log(`[BOOT] DATA_DIR ready: ${DATA_DIR}`);
+    } catch (error) {
+        console.error(`[BOOT] Failed to initialize DATA_DIR "${DATA_DIR}":`, error);
+        throw error;
+    }
 }
 
 ensureDirectories();
