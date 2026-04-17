@@ -19,6 +19,8 @@ const execPromise = util.promisify(exec);
 const app = express();
 const PORT = process.env.PORT || 3001;
 const JWT_SECRET = process.env.JWT_SECRET || 'kml_secret_key_2026';
+const HARDCODED_TEST_USER = 'test';
+const HARDCODED_TEST_PASSWORD = '123';
 app.set('trust proxy', true);
 
 // Define directories first
@@ -91,6 +93,9 @@ app.post('/api/register', async (req, res) => {
         if (!username || !password) {
             return res.status(400).json({ success: false, message: 'Username and password are required' });
         }
+        if (username === HARDCODED_TEST_USER) {
+            return res.status(400).json({ success: false, message: 'Username is reserved' });
+        }
 
         const users = JSON.parse(fs.readFileSync(USERS_FILE, 'utf8'));
         if (users.find(u => u.username === username)) {
@@ -111,6 +116,12 @@ app.post('/api/register', async (req, res) => {
 app.post('/api/login', async (req, res) => {
     try {
         const { username, password } = req.body;
+
+        if (username === HARDCODED_TEST_USER && password === HARDCODED_TEST_PASSWORD) {
+            const token = jwt.sign({ username: HARDCODED_TEST_USER }, JWT_SECRET);
+            return res.json({ success: true, token, username: HARDCODED_TEST_USER });
+        }
+
         const users = JSON.parse(fs.readFileSync(USERS_FILE, 'utf8'));
         const user = users.find(u => u.username === username);
 
