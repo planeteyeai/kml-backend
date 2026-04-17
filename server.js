@@ -956,7 +956,6 @@ app.post('/upload-kml', authenticateToken, upload.single('kmlFile'), async (req,
         const userDirs = getUserDirs(req.user.username);
         const userFilePath = req.file.path; // Already in userDirs.uploadsDir
         const baseUrl = getRequestBaseUrl(req);
-        clearUserWorkingData(userDirs, req.user.username, { preserveFiles: [userFilePath] });
 
         const kmlContent = fs.readFileSync(userFilePath, 'utf8');
         const kmlDom = new DOMParser().parseFromString(kmlContent);
@@ -1028,7 +1027,6 @@ app.post('/save', authenticateToken, async (req, res) => {
     try {
         const userDirs = getUserDirs(req.user.username);
         const baseUrl = getRequestBaseUrl(req);
-        clearUserWorkingData(userDirs, req.user.username);
         const newData = req.body;
         newData.id = Date.now();
         newData.timestamp = new Date().toISOString();
