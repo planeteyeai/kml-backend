@@ -74,7 +74,8 @@ ensureDirectories();
 app.use(cors({
     origin: '*',
     methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
-    allowedHeaders: ['Content-Type', 'Authorization']
+    // Must include custom headers or browsers block cross-origin requests (save/pipeline from hosted frontend)
+    allowedHeaders: ['Content-Type', 'Authorization', 'x-username'],
 }));
 
 app.use(bodyParser.json({ limit: '50mb' }));
