@@ -19,9 +19,12 @@ const execPromise = util.promisify(exec);
 const app = express();
 const PORT = process.env.PORT || 3001;
 const JWT_SECRET = process.env.JWT_SECRET || 'kml_secret_key_2026';
+app.set('trust proxy', true);
 
 // Define directories first
-const DATA_DIR = path.join(__dirname, 'data');
+const DATA_DIR = process.env.DATA_DIR
+    ? path.resolve(process.env.DATA_DIR)
+    : path.join(__dirname, 'data');
 const USERS_FILE = path.join(DATA_DIR, 'users.json');
 
 // Helper to get user-specific directories
@@ -59,15 +62,9 @@ function ensureDirectories() {
 ensureDirectories();
 
 app.use(cors({
-    origin: [
-        "https://kml-frontend-production.up.railway.app",
-        "http://localhost:3000",
-        "http://127.0.0.1:3000",
-        "http://localhost:3003",
-        "http://127.0.0.1:3003"
-    ],
-    methods: ["GET", "POST", "PUT", "DELETE"],
-    allowedHeaders: ["Content-Type", "Authorization"]
+    origin: '*',
+    methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
+    allowedHeaders: ['Content-Type', 'Authorization']
 }));
 
 app.use(bodyParser.json({ limit: '50mb' }));
@@ -332,10 +329,217 @@ async function saveToPipeline(metadata, content, userDirs, isKmlContent = false)
     return 'Merge_KMLs';
 }
 
+function getRequestBaseUrl(req) {
+    const protocol = (req.headers['x-forwarded-proto'] || req.protocol || 'http').split(',')[0].trim();
+    const host = req.get('host');
+    return `${protocol}://${host}`;
+}
+
+function getMergeImageEntries(username) {
+    const userDirs = getUserDirs(username);
+    const imageConfigs = [
+        { key: 'lhs', folder: path.join(userDirs.pipelineDir, 'LHS_KMLs', 'LHS_kml_merge_images') },
+        { key: 'rhs', folder: path.join(userDirs.pipelineDir, 'RHS_KMLs', 'RHS_kml_merge_images') }
+    ];
+
+    const imageExtRegex = /\.(png|jpe?g|gif|webp|bmp)$/i;
+    const images = imageConfigs.flatMap(({ key, folder }) => {
+        if (!fs.existsSync(folder) || !fs.statSync(folder).isDirectory()) {
+            return [];
+        }
+
+        return fs.readdirSync(folder)
+            .filter((fileName) => imageExtRegex.test(fileName))
+            .map((fileName) => {
+                const absolutePath = path.join(folder, fileName);
+                const stats = fs.statSync(absolutePath);
+                return {
+                    side: key,
+                    fileName,
+                    size: stats.size,
+                    modifiedAt: stats.mtime,
+                    absolutePath
+                };
+            });
+    });
+
+    images.sort((a, b) => new Date(b.modifiedAt) - new Date(a.modifiedAt));
+    return images;
+}
+
+function clearUserWorkingData(userDirs, username, options = {}) {
+    const { preserveFiles = [] } = options;
+    const preserveSet = new Set(
+        preserveFiles
+            .filter(Boolean)
+            .map((filePath) => path.resolve(filePath))
+    );
+
+    if (fs.existsSync(userDirs.dataFile)) {
+        try {
+            fs.writeFileSync(userDirs.dataFile, JSON.stringify([], null, 2));
+        } catch (e) {
+            console.error('Error clearing data file:', e);
+        }
+    }
+
+    if (fs.existsSync(userDirs.uploadsDir)) {
+        try {
+            const uploadFiles = fs.readdirSync(userDirs.uploadsDir);
+            for (const file of uploadFiles) {
+                const filePath = path.join(userDirs.uploadsDir, file);
+                try {
+                    if (fs.existsSync(filePath) && fs.statSync(filePath).isFile() && !preserveSet.has(path.resolve(filePath))) {
+                        fs.unlinkSync(filePath);
+                    }
+                } catch (err) {
+                    console.error(`Error deleting upload file ${file}:`, err);
+                }
+            }
+        } catch (e) {
+            console.error('Error reading uploads dir:', e);
+        }
+    }
+
+    const subDirs = ['LHS_KMLs', 'RHS_KMLs', 'Excels', 'Merge_KMLs'];
+    for (const sub of subDirs) {
+        const subPath = path.join(userDirs.pipelineDir, sub);
+        if (fs.existsSync(subPath)) {
+            try {
+                const items = fs.readdirSync(subPath);
+                for (const item of items) {
+                    const itemPath = path.join(subPath, item);
+                    try {
+                        if (fs.existsSync(itemPath)) {
+                            if (fs.statSync(itemPath).isDirectory()) {
+                                fs.rmSync(itemPath, { recursive: true, force: true });
+                            } else {
+                                fs.unlinkSync(itemPath);
+                            }
+                        }
+                    } catch (err) {
+                        console.error(`Error deleting item ${item} in ${sub}:`, err);
+                    }
+                }
+            } catch (err) {
+                console.error(`Error reading directory ${sub}:`, err);
+            }
+        }
+    }
+
+    if (fs.existsSync(userDirs.pipelineDir)) {
+        try {
+            const rootItems = fs.readdirSync(userDirs.pipelineDir);
+            for (const item of rootItems) {
+                const itemPath = path.join(userDirs.pipelineDir, item);
+                try {
+                    if (fs.existsSync(itemPath) && fs.statSync(itemPath).isFile()) {
+                        fs.unlinkSync(itemPath);
+                    }
+                } catch (err) {
+                    console.error(`Error deleting root file ${item}:`, err);
+                }
+            }
+        } catch (err) {
+            console.error('Error reading pipeline root:', err);
+        }
+    }
+
+    console.log(`User data cleared for: ${username}`);
+}
+
 // WATCHER REMOVED to prevent race conditions during save operations.
 // Pipeline is now explicitly called in /save and /upload-kml routes.
 
 // Routes
+app.get('/api/merge-images/:username', (req, res) => {
+    try {
+        const username = (req.params.username || '').trim();
+        if (!username) {
+            return res.status(400).json({ success: false, message: 'Username is required' });
+        }
+        const baseUrl = getRequestBaseUrl(req);
+        const images = getMergeImageEntries(username).map((img) => ({
+            side: img.side,
+            fileName: img.fileName,
+            size: img.size,
+            modifiedAt: img.modifiedAt,
+            url: `/api/merge-images/${encodeURIComponent(username)}/${img.side}/${encodeURIComponent(img.fileName)}`,
+            publicUrl: `${baseUrl}/api/merge-images/${encodeURIComponent(username)}/${img.side}/${encodeURIComponent(img.fileName)}`
+        }));
+
+        return res.json({ success: true, username, count: images.length, images });
+    } catch (error) {
+        console.error('Error fetching merge images:', error);
+        return res.status(500).json({ success: false, message: 'Error fetching merge images' });
+    }
+});
+
+app.get('/api/merge-images/:username/:side/:fileName', (req, res) => {
+    try {
+        const { username, side } = req.params;
+        const decodedFileName = decodeURIComponent(req.params.fileName || '');
+        if (!username || !username.trim()) {
+            return res.status(400).json({ success: false, message: 'Username is required' });
+        }
+
+        const userDirs = getUserDirs(username.trim());
+
+        const sideFolderMap = {
+            lhs: path.join(userDirs.pipelineDir, 'LHS_KMLs', 'LHS_kml_merge_images'),
+            rhs: path.join(userDirs.pipelineDir, 'RHS_KMLs', 'RHS_kml_merge_images')
+        };
+
+        const targetFolder = sideFolderMap[side];
+        if (!targetFolder) {
+            return res.status(400).json({ success: false, message: 'Invalid side. Use lhs or rhs.' });
+        }
+
+        const fullPath = path.resolve(targetFolder, decodedFileName);
+        if (!fullPath.startsWith(path.resolve(targetFolder) + path.sep)) {
+            return res.status(403).json({ success: false, message: 'Access denied' });
+        }
+
+        if (!fs.existsSync(fullPath) || !fs.statSync(fullPath).isFile()) {
+            return res.status(404).json({ success: false, message: 'Image not found' });
+        }
+
+        return res.sendFile(fullPath);
+    } catch (error) {
+        console.error('Error serving merge image:', error);
+        return res.status(500).json({ success: false, message: 'Error serving merge image' });
+    }
+});
+
+// Public endpoint: fetch image directly by full path
+// Example:
+// /api/public-image?path=C:\Users\...\backend\data\users\rudra\pipeline\LHS_KMLs\LHS_kml_merge_images\file.png
+app.get('/api/public-image', (req, res) => {
+    try {
+        const requestedPath = (req.query.path || '').toString().trim();
+        if (!requestedPath) {
+            return res.status(400).json({ success: false, message: 'Query param "path" is required' });
+        }
+
+        const dataUsersRoot = path.resolve(DATA_DIR, 'users');
+        const normalizedRequestedPath = path.resolve(requestedPath);
+
+        // Only allow files inside backend/data/users
+        if (!normalizedRequestedPath.startsWith(dataUsersRoot + path.sep)) {
+            return res.status(403).json({ success: false, message: 'Access denied. Path must be inside backend/data/users' });
+        }
+
+        if (!fs.existsSync(normalizedRequestedPath) || !fs.statSync(normalizedRequestedPath).isFile()) {
+            return res.status(404).json({ success: false, message: 'Image not found' });
+        }
+
+        return res.sendFile(normalizedRequestedPath);
+    } catch (error) {
+        console.error('Error serving public image by path:', error);
+        return res.status(500).json({ success: false, message: 'Error serving image by path' });
+    }
+});
+
 app.get('/download-folder', authenticateToken, (req, res) => {
     const userDirs = getUserDirs(req.user.username);
     const folderPath = req.query.path || '';
@@ -722,6 +926,8 @@ app.post('/upload-kml', authenticateToken, upload.single('kmlFile'), async (req,
 
         const userDirs = getUserDirs(req.user.username);
         const userFilePath = req.file.path; // Already in userDirs.uploadsDir
+        const baseUrl = getRequestBaseUrl(req);
+        clearUserWorkingData(userDirs, req.user.username, { preserveFiles: [userFilePath] });
 
         const kmlContent = fs.readFileSync(userFilePath, 'utf8');
         const kmlDom = new DOMParser().parseFromString(kmlContent);
@@ -760,11 +966,23 @@ app.post('/upload-kml', authenticateToken, upload.single('kmlFile'), async (req,
             throw new Error('Pipeline processing failed to return a valid path');
         }
 
+        const mergeImages = getMergeImageEntries(req.user.username).map((img) => ({
+            side: img.side,
+            fileName: img.fileName,
+            size: img.size,
+            modifiedAt: img.modifiedAt,
+            url: `/api/merge-images/${encodeURIComponent(req.user.username)}/${img.side}/${encodeURIComponent(img.fileName)}`,
+            publicUrl: `${baseUrl}/api/merge-images/${encodeURIComponent(req.user.username)}/${img.side}/${encodeURIComponent(img.fileName)}`,
+            absolutePath: img.absolutePath
+        }));
+
         res.json({
             success: true,
             message: 'File uploaded and processed successfully',
             pipelinePath: pipelinePath,
-            data: kmlData
+            data: kmlData,
+            mergeImageCount: mergeImages.length,
+            mergeImages
         });
     } catch (error) {
         console.error('Upload-KML Error:', error);
@@ -779,6 +997,8 @@ app.post('/upload-kml', authenticateToken, upload.single('kmlFile'), async (req,
 app.post('/save', authenticateToken, async (req, res) => {
     try {
         const userDirs = getUserDirs(req.user.username);
+        const baseUrl = getRequestBaseUrl(req);
+        clearUserWorkingData(userDirs, req.user.username);
         const newData = req.body;
         newData.id = Date.now();
         newData.timestamp = new Date().toISOString();
@@ -798,11 +1018,23 @@ app.post('/save', authenticateToken, async (req, res) => {
             throw new Error('Save operation failed to generate pipeline files');
         }
 
+        const mergeImages = getMergeImageEntries(req.user.username).map((img) => ({
+            side: img.side,
+            fileName: img.fileName,
+            size: img.size,
+            modifiedAt: img.modifiedAt,
+            url: `/api/merge-images/${encodeURIComponent(req.user.username)}/${img.side}/${encodeURIComponent(img.fileName)}`,
+            publicUrl: `${baseUrl}/api/merge-images/${encodeURIComponent(req.user.username)}/${img.side}/${encodeURIComponent(img.fileName)}`,
+            absolutePath: img.absolutePath
+        }));
+
         res.json({
             success: true,
             message: 'Data saved and processed successfully',
             id: newData.id,
-            pipelinePath: pipelinePath
+            pipelinePath: pipelinePath,
+            mergeImageCount: mergeImages.length,
+            mergeImages
         });
     } catch (error) {
         console.error('Save Error:', error);
@@ -818,66 +1050,7 @@ app.post('/clear-all', authenticateToken, async (req, res) => {
     try {
         const userDirs = getUserDirs(req.user.username);
         console.log(`Clearing all data for user: ${req.user.username}...`);
-
-        // 1. Clear user-specific data file
-        if (fs.existsSync(userDirs.dataFile)) {
-            try {
-                fs.writeFileSync(userDirs.dataFile, JSON.stringify([], null, 2));
-            } catch (e) { console.error('Error clearing data file:', e); }
-        }
-
-        // 2. Clear user-specific uploads directory
-        if (fs.existsSync(userDirs.uploadsDir)) {
-            try {
-                const uploadFiles = fs.readdirSync(userDirs.uploadsDir);
-                for (const file of uploadFiles) {
-                    const filePath = path.join(userDirs.uploadsDir, file);
-                    try {
-                        if (fs.existsSync(filePath) && fs.statSync(filePath).isFile()) {
-                            fs.unlinkSync(filePath);
-                        }
-                    } catch (err) { console.error(`Error deleting upload file ${file}:`, err); }
-                }
-            } catch (e) { console.error('Error reading uploads dir:', e); }
-        }
-
-        // 3. Clear user-specific pipeline subdirectories
-        const subDirs = ['LHS_KMLs', 'RHS_KMLs', 'Excels', 'Merge_KMLs'];
-        for (const sub of subDirs) {
-            const subPath = path.join(userDirs.pipelineDir, sub);
-            if (fs.existsSync(subPath)) {
-                try {
-                    const items = fs.readdirSync(subPath);
-                    for (const item of items) {
-                        const itemPath = path.join(subPath, item);
-                        try {
-                            if (fs.existsSync(itemPath)) {
-                                if (fs.statSync(itemPath).isDirectory()) {
-                                    fs.rmSync(itemPath, { recursive: true, force: true });
-                                } else {
-                                    fs.unlinkSync(itemPath);
-                                }
-                            }
-                        } catch (err) { console.error(`Error deleting item ${item} in ${sub}:`, err); }
-                    }
-                } catch (err) { console.error(`Error reading directory ${sub}:`, err); }
-            }
-        }
-
-        // 4. Clear the user-specific pipeline root
-        if (fs.existsSync(userDirs.pipelineDir)) {
-            try {
-                const rootItems = fs.readdirSync(userDirs.pipelineDir);
-                for (const item of rootItems) {
-                    const itemPath = path.join(userDirs.pipelineDir, item);
-                    try {
-                        if (fs.existsSync(itemPath) && fs.statSync(itemPath).isFile()) {
-                            fs.unlinkSync(itemPath);
-                        }
-                    } catch (err) { console.error(`Error deleting root file ${item}:`, err); }
-                }
-            } catch (err) { console.error(`Error reading pipeline root:`, err); }
-        }
+        clearUserWorkingData(userDirs, req.user.username);
 
         console.log(`Clear-all completed for user: ${req.user.username}`);
         // ALWAYS return success: true to the frontend to prevent the error popup

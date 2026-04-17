@@ -23,7 +23,7 @@ ENV PATH="/opt/venv/bin:$PATH"
 # Install Python dependencies
 COPY requirements.txt ./
 RUN python3 -m pip install --no-cache-dir --upgrade pip \
-    && pip3 install --no-cache-dir -r requirements.txt
+    && python3 -m pip install --no-cache-dir -r requirements.txt
 
 # Install Node.js dependencies
 COPY package*.json ./
@@ -34,12 +34,13 @@ COPY . .
 
 # Set environment variables
 ENV NODE_ENV=production
-ENV PORT=8080
+ENV PORT=3001
+ENV DATA_DIR=/app/data
 
 # Create data directory with proper permissions
 RUN mkdir -p data/users && chmod -R 777 data
 
-EXPOSE 8080
+EXPOSE 3001
 
 # Start the application
 CMD ["node", "server.js"]
