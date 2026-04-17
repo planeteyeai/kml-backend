@@ -27,7 +27,7 @@ RUN python3 -m pip install --no-cache-dir --upgrade pip \
 
 # Install Node.js dependencies
 COPY package*.json ./
-RUN npm ci --omit=dev
+RUN if [ -f package-lock.json ]; then npm ci --omit=dev; else npm install --omit=dev; fi
 
 # Copy the rest of the application
 COPY . .
