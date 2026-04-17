@@ -1,5 +1,10 @@
 pyproj
+numpy
 pandas
+earthengine-api
+opencv-python-headless
 geopy
 simplekml
 openpyxl
+Pillow
+requests

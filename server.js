@@ -59,7 +59,13 @@ function ensureDirectories() {
 ensureDirectories();
 
 app.use(cors({
-    origin: ["https://kml-frontend-production.up.railway.app", "http://localhost:3000"],
+    origin: [
+        "https://kml-frontend-production.up.railway.app",
+        "http://localhost:3000",
+        "http://127.0.0.1:3000",
+        "http://localhost:3003",
+        "http://127.0.0.1:3003"
+    ],
     methods: ["GET", "POST", "PUT", "DELETE"],
     allowedHeaders: ["Content-Type", "Authorization"]
 }));
@@ -255,7 +261,13 @@ async function processWithPython(metadata, kmlContent, userDirs) {
 
             // 4. Spawn process
             const { spawn } = require('child_process');
-            const child = spawn(pythonExe, args);
+            const childEnv = {
+                ...process.env,
+                SATELLITE_DATE_START: metadata.startDate || process.env.SATELLITE_DATE_START || '2026-02-10',
+                SATELLITE_DATE_END: metadata.endDate || process.env.SATELLITE_DATE_END || '2026-02-20',
+                IMAGE_DIRECTION: metadata.imageDirection || process.env.IMAGE_DIRECTION || 'down_to_up',
+            };
+            const child = spawn(pythonExe, args, { env: childEnv });
 
             let stdoutData = '';
             let stderrData = '';
@@ -722,7 +734,10 @@ app.post('/upload-kml', authenticateToken, upload.single('kmlFile'), async (req,
                 chainage: req.body.chainage || '',
                 offsetType: req.body.offsetType || '',
                 laneCount: req.body.laneCount || '',
-                kmlMergeOffset: req.body.kmlMergeOffset || ''
+                kmlMergeOffset: req.body.kmlMergeOffset || '',
+                startDate: req.body.startDate || '',
+                endDate: req.body.endDate || '',
+                imageDirection: req.body.imageDirection || 'down_to_up'
             },
             geometry: geoJson.features,
             filePath: userFilePath,
