@@ -396,6 +396,11 @@ function getMergeImageEntries(username) {
     return images;
 }
 
+/** True only for flat strip PNGs in *_kml_merge_images (excludes LHS_images/L1 etc.). */
+function isMergeKmlStripPath(absolutePath) {
+    return /[/\\](LHS|RHS)_kml_merge_images[/\\]/i.test(absolutePath || '');
+}
+
 function clearUserWorkingData(userDirs, username, options = {}) {
     const { preserveFiles = [] } = options;
     const preserveSet = new Set(
@@ -487,8 +492,16 @@ app.get('/api/merge-images/:username', (req, res) => {
         if (!username) {
             return res.status(400).json({ success: false, message: 'Username is required' });
         }
+        const onlyMergeKml =
+            ['1', 'true', 'yes', 'merge_kml', 'merge'].includes(
+                String(req.query.only || req.query.merge_only || '').toLowerCase()
+            );
         const baseUrl = getRequestBaseUrl(req);
-        const images = getMergeImageEntries(username).map((img) => ({
+        let raw = getMergeImageEntries(username);
+        if (onlyMergeKml) {
+            raw = raw.filter((img) => isMergeKmlStripPath(img.absolutePath));
+        }
+        const images = raw.map((img) => ({
             side: img.side,
             lane: img.lane,
             fileName: img.fileName,
@@ -498,7 +511,13 @@ app.get('/api/merge-images/:username', (req, res) => {
             publicUrl: `${baseUrl}/api/public-image?path=${encodeURIComponent(img.absolutePath)}`
         }));
 
-        return res.json({ success: true, username, count: images.length, images });
+        return res.json({
+            success: true,
+            username,
+            count: images.length,
+            onlyMergeKml: !!onlyMergeKml,
+            images
+        });
     } catch (error) {
         console.error('Error fetching merge images:', error);
         return res.status(500).json({ success: false, message: 'Error fetching merge images' });
@@ -538,6 +557,222 @@ app.get('/api/merge-images/:username/:side/:fileName', (req, res) => {
     } catch (error) {
         console.error('Error serving merge image:', error);
         return res.status(500).json({ success: false, message: 'Error serving merge image' });
+    }
+});
+
+/**
+ * All PNGs (etc.) from *_kml_merge_images in one download (ZIP).
+ * side: lhs | rhs | both — maps to pipeline/LHS_KMLs/LHS_kml_merge_images and RHS_KMLs/RHS_kml_merge_images
+ */
+function collectMergeKmlFolderFiles(username, side, options = {}) {
+    const flat = !!options.flat;
+    const userDirs = getUserDirs(username);
+    const imageExtRegex = /\.(png|jpe?g|gif|webp|bmp)$/i;
+    const out = [];
+    const usedNames = new Set();
+    const s = String(side || 'rhs').toLowerCase();
+    const isBoth = s === 'both';
+
+    const addFlat = (absFolder, zipDirName, sidePrefix) => {
+        if (!fs.existsSync(absFolder) || !fs.statSync(absFolder).isDirectory()) return;
+        fs.readdirSync(absFolder).forEach((name) => {
+            const fp = path.join(absFolder, name);
+            if (!fs.statSync(fp).isFile() || !imageExtRegex.test(name)) return;
+            let nameInZip;
+            if (!flat) {
+                nameInZip = `${zipDirName}/${name}`;
+            } else if (isBoth) {
+                nameInZip = `${sidePrefix}_${name}`;
+            } else {
+                nameInZip = name;
+            }
+            if (flat) {
+                let tryName = nameInZip;
+                let n = 2;
+                while (usedNames.has(tryName)) {
+                    const ext = path.extname(name);
+                    const base = name.slice(0, -ext.length);
+                    tryName = `${base}_${n}${ext}`;
+                    n += 1;
+                }
+                usedNames.add(tryName);
+                nameInZip = tryName;
+            }
+            out.push({ abs: fp, nameInZip });
+        });
+    };
+
+    if (s === 'lhs' || isBoth) {
+        addFlat(
+            path.join(userDirs.pipelineDir, 'LHS_KMLs', 'LHS_kml_merge_images'),
+            'LHS_kml_merge_images',
+            'LHS'
+        );
+    }
+    if (s === 'rhs' || isBoth) {
+        addFlat(
+            path.join(userDirs.pipelineDir, 'RHS_KMLs', 'RHS_kml_merge_images'),
+            'RHS_kml_merge_images',
+            'RHS'
+        );
+    }
+    return out;
+}
+
+app.get('/api/merge-kml-images-zip/:username/:side', (req, res) => {
+    try {
+        const username = (req.params.username || '').trim();
+        const sideRaw = (req.params.side || 'rhs').trim();
+        if (!username) {
+            return res.status(400).json({ success: false, message: 'Username is required' });
+        }
+        const side = sideRaw.toLowerCase();
+        if (!['lhs', 'rhs', 'both'].includes(side)) {
+            return res.status(400).json({
+                success: false,
+                message: 'Invalid side. Use lhs, rhs, or both (folder merge_kml_images).'
+            });
+        }
+
+        const flat = ['1', 'true', 'yes'].includes(String(req.query.flat || '').toLowerCase());
+        const files = collectMergeKmlFolderFiles(username, side, { flat });
+        if (files.length === 0) {
+            return res.status(404).json({
+                success: false,
+                message: 'No images found in merge_kml_images folder(s) for this user.'
+            });
+        }
+
+        const safeName = `merge_kml_images_${username}_${side}${flat ? '_flat' : ''}.zip`.replace(/[^\w.\-]+/g, '_');
+        res.setHeader('Content-Type', 'application/zip');
+        res.setHeader('Content-Disposition', `attachment; filename="${safeName}"`);
+
+        const archive = archiver('zip', { zlib: { level: 9 } });
+        archive.on('error', (err) => {
+            console.error('merge-kml-images-zip archive error:', err);
+            if (!res.headersSent) {
+                res.status(500).json({ success: false, message: 'Error creating zip' });
+            }
+        });
+        archive.pipe(res);
+        files.forEach(({ abs, nameInZip }) => {
+            archive.file(abs, { name: nameInZip });
+        });
+        archive.finalize();
+    } catch (error) {
+        console.error('Error in merge-kml-images-zip:', error);
+        if (!res.headersSent) {
+            res.status(500).json({ success: false, message: 'Error building merge images archive' });
+        }
+    }
+});
+
+function guessImageMime(fileName) {
+    const ext = path.extname(fileName || '').toLowerCase();
+    if (ext === '.png') return 'image/png';
+    if (ext === '.jpg' || ext === '.jpeg') return 'image/jpeg';
+    if (ext === '.gif') return 'image/gif';
+    if (ext === '.webp') return 'image/webp';
+    if (ext === '.bmp') return 'image/bmp';
+    return 'application/octet-stream';
+}
+
+/** Flat list of files only in *_kml_merge_images (no lane subfolders). */
+function listMergeKmlStripFiles(username, side) {
+    const userDirs = getUserDirs(username);
+    const imageExtRegex = /\.(png|jpe?g|gif|webp|bmp)$/i;
+    const out = [];
+    const s = String(side || 'rhs').toLowerCase();
+    const scan = (folder, sideId) => {
+        if (!fs.existsSync(folder) || !fs.statSync(folder).isDirectory()) return;
+        fs.readdirSync(folder).forEach((name) => {
+            const abs = path.join(folder, name);
+            if (!fs.statSync(abs).isFile() || !imageExtRegex.test(name)) return;
+            out.push({ abs, fileName: name, side: sideId });
+        });
+    };
+    if (s === 'lhs' || s === 'both') {
+        scan(path.join(userDirs.pipelineDir, 'LHS_KMLs', 'LHS_kml_merge_images'), 'lhs');
+    }
+    if (s === 'rhs' || s === 'both') {
+        scan(path.join(userDirs.pipelineDir, 'RHS_KMLs', 'RHS_kml_merge_images'), 'rhs');
+    }
+    return out;
+}
+
+/**
+ * All merge-strip images in one JSON body (base64 per file). No ZIP.
+ * GET /api/merge-kml-images-data/:username/:side  — side: lhs | rhs | both
+ * Optional: ?maxBytes=52428800 (default cap on total raw bytes before base64; env MAX_MERGE_KML_JSON_BYTES)
+ */
+app.get('/api/merge-kml-images-data/:username/:side', (req, res) => {
+    try {
+        const username = (req.params.username || '').trim();
+        const side = (req.params.side || 'rhs').toLowerCase();
+        if (!username) {
+            return res.status(400).json({ success: false, message: 'Username is required' });
+        }
+        if (!['lhs', 'rhs', 'both'].includes(side)) {
+            return res.status(400).json({
+                success: false,
+                message: 'Invalid side. Use lhs, rhs, or both.'
+            });
+        }
+
+        const entries = listMergeKmlStripFiles(username, side);
+        if (entries.length === 0) {
+            return res.status(404).json({
+                success: false,
+                message: 'No images in merge_kml_images folders for this user.'
+            });
+        }
+
+        let maxRaw = parseInt(process.env.MAX_MERGE_KML_JSON_BYTES || '', 10);
+        if (!Number.isFinite(maxRaw) || maxRaw <= 0) {
+            maxRaw = 80 * 1024 * 1024;
+        }
+        const qMax = parseInt(String(req.query.maxBytes || ''), 10);
+        if (Number.isFinite(qMax) && qMax > 0) {
+            maxRaw = Math.min(maxRaw, qMax);
+        }
+
+        let totalBytes = 0;
+        for (const e of entries) {
+            totalBytes += fs.statSync(e.abs).size;
+        }
+        if (totalBytes > maxRaw) {
+            return res.status(413).json({
+                success: false,
+                message: 'Total image size exceeds limit for one JSON response. Use per-file URLs from GET /api/merge-images/:username?only=merge_kml, raise maxBytes, or set MAX_MERGE_KML_JSON_BYTES.',
+                totalBytes,
+                maxRaw,
+                fileCount: entries.length
+            });
+        }
+
+        const images = entries.map((e) => {
+            const buf = fs.readFileSync(e.abs);
+            return {
+                fileName: e.fileName,
+                side: e.side,
+                size: buf.length,
+                mime: guessImageMime(e.fileName),
+                encoding: 'base64',
+                data: buf.toString('base64')
+            };
+        });
+
+        return res.json({
+            success: true,
+            username,
+            side,
+            encoding: 'base64',
+            count: images.length,
+            images
+        });
+    } catch (error) {
+        console.error('Error in merge-kml-images-data:', error);
+        return res.status(500).json({ success: false, message: 'Error reading merge images' });
     }
 });
 
@@ -601,9 +836,17 @@ app.get('/download-folder', authenticateToken, (req, res) => {
     }
 });
 
-app.get('/pipeline-files/*filePath', authenticateToken, (req, res) => {
+// Nested paths (e.g. RHS_KMLs/RHS_kml_merge_images/file.png): use a regexp so Express always matches
+// (some setups failed to match `/pipeline-files/*` and returned the default "Cannot GET ..." 404).
+app.get(/^\/pipeline-files\/(.+)$/, authenticateToken, (req, res) => {
     const userDirs = getUserDirs(req.user.username);
-    const filePath = req.params.filePath || '';
+    let filePath = req.params[0] || '';
+    try {
+        filePath = decodeURIComponent(filePath);
+    } catch (e) {
+        /* use raw */
+    }
+    filePath = filePath.replace(/^\/+/, '');
     const fullPath = path.resolve(userDirs.pipelineDir, filePath);
 
     if (!fullPath.startsWith(userDirs.pipelineDir)) {
