@@ -284,7 +284,7 @@ app.post('/api/login', (req, res) => {
  * (LHS_images, RHS_images, LHS_kml_merge_images, RHS_kml_merge_images) as base64 in "images".
  * Size cap: env MAX_LOGIN_IMAGES_JSON_BYTES (default 200 MB raw total before base64); raise if needed.
  */
-app.post('/api/login/images', async (req, res) => {
+app.post('/api/login/images', (req, res) => {
     try {
         const { username, password } = req.body || {};
         const u = String(username || '').trim();
@@ -302,20 +302,9 @@ app.post('/api/login/images', async (req, res) => {
         const token = jwt.sign({ username: tokenUsername }, JWT_SECRET);
 
         const raw = getMergeImageEntries(tokenUsername);
-        let sourceEntries = raw;
-        try {
-            await syncUserImagesToDb(tokenUsername, raw);
-            const stored = await getStoredMergeImageEntries(tokenUsername);
-            if (stored.length > 0) sourceEntries = stored;
-        } catch (dbError) {
-            console.error('SQLite sync/read failed, using filesystem fallback:', dbError);
-        }
         const baseUrl = getRequestBaseUrl(req);
 
-        // For /api/login/images return only lane/per-image outputs and exclude merge-strip images.
-        const filteredEntries = sourceEntries.filter((img) => !isMergeKmlStripPath(img.absolutePath));
-
-        const images = filteredEntries.map((img) => {
+        const images = raw.map((img) => {
             const access = createPublicImageAccessToken(tokenUsername, img.absolutePath);
             const encodedPath = encodeURIComponent(img.absolutePath);
             const encodedAccess = encodeURIComponent(access);
@@ -928,6 +917,7 @@ app.get('/api/merge-images/:username', requireMergeImagesAccess, (req, res) => {
                 publicUrl: links.publicUrl
             };
         });
+        }
 
         let hint;
         if (images.length === 0 && onlyMergeKml) {
