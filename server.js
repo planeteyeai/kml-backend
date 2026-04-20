@@ -138,16 +138,50 @@ app.post('/api/login', async (req, res) => {
     }
 });
 
-// Authentication disabled: accept requests without token and resolve a username
-// from request context. This keeps per-user folders separate without JWT.
+/** JWT from Authorization: Bearer or ?token= (GET / img / window.open). */
+function extractBearerToken(req) {
+    const authHeader = req.headers && req.headers.authorization;
+    if (authHeader && typeof authHeader === 'string' && authHeader.startsWith('Bearer ')) {
+        const t = authHeader.slice(7).trim();
+        if (t) return t;
+    }
+    const q = req.query && req.query.token;
+    if (q && typeof q === 'string' && q.trim()) return q.trim();
+    return null;
+}
+
 const authenticateToken = (req, res, next) => {
-    const bodyUsername = req.body && typeof req.body.username === 'string' ? req.body.username.trim() : '';
-    const queryUsername = req.query && typeof req.query.username === 'string' ? req.query.username.trim() : '';
-    const headerUsername = req.headers['x-username'] ? String(req.headers['x-username']).trim() : '';
-    const resolvedUsername = bodyUsername || queryUsername || headerUsername || 'local-user';
-    req.user = { username: resolvedUsername };
-    next();
+    const token = extractBearerToken(req);
+    if (!token) {
+        return res.status(401).json({
+            success: false,
+            message: 'Authentication required. Use Authorization: Bearer <token> or ?token= for GET requests.'
+        });
+    }
+    try {
+        const decoded = jwt.verify(token, JWT_SECRET);
+        if (!decoded || typeof decoded.username !== 'string' || !decoded.username.trim()) {
+            return res.status(401).json({ success: false, message: 'Invalid token payload' });
+        }
+        req.user = { username: decoded.username.trim() };
+        next();
+    } catch (err) {
+        return res.status(401).json({ success: false, message: 'Invalid or expired token' });
+    }
 };
+
+function assertRouteUsername(req, res, usernameParam) {
+    const u = (usernameParam || '').trim();
+    if (!u) {
+        res.status(400).json({ success: false, message: 'Username is required' });
+        return false;
+    }
+    if (u !== req.user.username) {
+        res.status(403).json({ success: false, message: 'Username does not match authenticated user' });
+        return false;
+    }
+    return true;
+}
 
 
 // Helper function to convert GeoJSON to KML
@@ -351,6 +385,17 @@ function getRequestBaseUrl(req) {
     return `${protocol}://${host}`;
 }
 
+function publicImageLinks(req, absolutePath) {
+    const baseUrl = getRequestBaseUrl(req);
+    const enc = encodeURIComponent(absolutePath);
+    const ts = extractBearerToken(req);
+    const suff = ts ? `&token=${encodeURIComponent(ts)}` : '';
+    return {
+        url: `/api/public-image?path=${enc}${suff}`,
+        publicUrl: `${baseUrl}/api/public-image?path=${enc}${suff}`
+    };
+}
+
 function getMergeImageEntries(username) {
     const userDirs = getUserDirs(username);
     const imageExtRegex = /\.(png|jpe?g|gif|webp|bmp)$/i;
@@ -486,30 +531,30 @@ function clearUserWorkingData(userDirs, username, options = {}) {
 // Pipeline is now explicitly called in /save and /upload-kml routes.
 
 // Routes
-app.get('/api/merge-images/:username', (req, res) => {
+app.get('/api/merge-images/:username', authenticateToken, (req, res) => {
     try {
-        const username = (req.params.username || '').trim();
-        if (!username) {
-            return res.status(400).json({ success: false, message: 'Username is required' });
-        }
+        if (!assertRouteUsername(req, res, req.params.username)) return;
+        const username = req.user.username;
         const onlyMergeKml =
             ['1', 'true', 'yes', 'merge_kml', 'merge'].includes(
                 String(req.query.only || req.query.merge_only || '').toLowerCase()
             );
-        const baseUrl = getRequestBaseUrl(req);
         let raw = getMergeImageEntries(username);
         if (onlyMergeKml) {
             raw = raw.filter((img) => isMergeKmlStripPath(img.absolutePath));
         }
-        const images = raw.map((img) => ({
-            side: img.side,
-            lane: img.lane,
-            fileName: img.fileName,
-            size: img.size,
-            modifiedAt: img.modifiedAt,
-            url: `/api/public-image?path=${encodeURIComponent(img.absolutePath)}`,
-            publicUrl: `${baseUrl}/api/public-image?path=${encodeURIComponent(img.absolutePath)}`
-        }));
+        const images = raw.map((img) => {
+            const links = publicImageLinks(req, img.absolutePath);
+            return {
+                side: img.side,
+                lane: img.lane,
+                fileName: img.fileName,
+                size: img.size,
+                modifiedAt: img.modifiedAt,
+                url: links.url,
+                publicUrl: links.publicUrl
+            };
+        });
 
         return res.json({
             success: true,
@@ -524,15 +569,14 @@ app.get('/api/merge-images/:username', (req, res) => {
     }
 });
 
-app.get('/api/merge-images/:username/:side/:fileName', (req, res) => {
+app.get('/api/merge-images/:username/:side/:fileName', authenticateToken, (req, res) => {
     try {
-        const { username, side } = req.params;
+        if (!assertRouteUsername(req, res, req.params.username)) return;
+        const { side } = req.params;
+        const username = req.user.username;
         const decodedFileName = decodeURIComponent(req.params.fileName || '');
-        if (!username || !username.trim()) {
-            return res.status(400).json({ success: false, message: 'Username is required' });
-        }
 
-        const userDirs = getUserDirs(username.trim());
+        const userDirs = getUserDirs(username);
 
         const sideFolderMap = {
             lhs: path.join(userDirs.pipelineDir, 'LHS_KMLs', 'LHS_kml_merge_images'),
@@ -619,13 +663,11 @@ function collectMergeKmlFolderFiles(username, side, options = {}) {
     return out;
 }
 
-app.get('/api/merge-kml-images-zip/:username/:side', (req, res) => {
+app.get('/api/merge-kml-images-zip/:username/:side', authenticateToken, (req, res) => {
     try {
-        const username = (req.params.username || '').trim();
+        if (!assertRouteUsername(req, res, req.params.username)) return;
+        const username = req.user.username;
         const sideRaw = (req.params.side || 'rhs').trim();
-        if (!username) {
-            return res.status(400).json({ success: false, message: 'Username is required' });
-        }
         const side = sideRaw.toLowerCase();
         if (!['lhs', 'rhs', 'both'].includes(side)) {
             return res.status(400).json({
@@ -705,13 +747,11 @@ function listMergeKmlStripFiles(username, side) {
  * GET /api/merge-kml-images-data/:username/:side  — side: lhs | rhs | both
  * Optional: ?maxBytes=52428800 (default cap on total raw bytes before base64; env MAX_MERGE_KML_JSON_BYTES)
  */
-app.get('/api/merge-kml-images-data/:username/:side', (req, res) => {
+app.get('/api/merge-kml-images-data/:username/:side', authenticateToken, (req, res) => {
     try {
-        const username = (req.params.username || '').trim();
+        if (!assertRouteUsername(req, res, req.params.username)) return;
+        const username = req.user.username;
         const side = (req.params.side || 'rhs').toLowerCase();
-        if (!username) {
-            return res.status(400).json({ success: false, message: 'Username is required' });
-        }
         if (!['lhs', 'rhs', 'both'].includes(side)) {
             return res.status(400).json({
                 success: false,
@@ -776,10 +816,8 @@ app.get('/api/merge-kml-images-data/:username/:side', (req, res) => {
     }
 });
 
-// Public endpoint: fetch image directly by full path
-// Example:
-// /api/public-image?path=C:\Users\...\backend\data\users\rudra\pipeline\LHS_KMLs\LHS_kml_merge_images\file.png
-app.get('/api/public-image', (req, res) => {
+// Authenticated: only files under data/users/<jwt-username>/...
+app.get('/api/public-image', authenticateToken, (req, res) => {
     try {
         const requestedPath = (req.query.path || '').toString().trim();
         if (!requestedPath) {
@@ -787,11 +825,11 @@ app.get('/api/public-image', (req, res) => {
         }
 
         const dataUsersRoot = path.resolve(DATA_DIR, 'users');
+        const userRoot = path.resolve(dataUsersRoot, req.user.username);
         const normalizedRequestedPath = path.resolve(requestedPath);
 
-        // Only allow files inside backend/data/users
-        if (!normalizedRequestedPath.startsWith(dataUsersRoot + path.sep)) {
-            return res.status(403).json({ success: false, message: 'Access denied. Path must be inside backend/data/users' });
+        if (!normalizedRequestedPath.startsWith(userRoot + path.sep)) {
+            return res.status(403).json({ success: false, message: 'Access denied. Path must be inside your user folder.' });
         }
 
         if (!fs.existsSync(normalizedRequestedPath) || !fs.statSync(normalizedRequestedPath).isFile()) {
@@ -1199,7 +1237,6 @@ app.post('/upload-kml', authenticateToken, upload.single('kmlFile'), async (req,
 
         const userDirs = getUserDirs(req.user.username);
         const userFilePath = req.file.path; // Already in userDirs.uploadsDir
-        const baseUrl = getRequestBaseUrl(req);
 
         const kmlContent = fs.readFileSync(userFilePath, 'utf8');
         const kmlDom = new DOMParser().parseFromString(kmlContent);
@@ -1238,16 +1275,19 @@ app.post('/upload-kml', authenticateToken, upload.single('kmlFile'), async (req,
             throw new Error('Pipeline processing failed to return a valid path');
         }
 
-        const mergeImages = getMergeImageEntries(req.user.username).map((img) => ({
-            side: img.side,
-            lane: img.lane,
-            fileName: img.fileName,
-            size: img.size,
-            modifiedAt: img.modifiedAt,
-            url: `/api/public-image?path=${encodeURIComponent(img.absolutePath)}`,
-            publicUrl: `${baseUrl}/api/public-image?path=${encodeURIComponent(img.absolutePath)}`,
-            absolutePath: img.absolutePath
-        }));
+        const mergeImages = getMergeImageEntries(req.user.username).map((img) => {
+            const links = publicImageLinks(req, img.absolutePath);
+            return {
+                side: img.side,
+                lane: img.lane,
+                fileName: img.fileName,
+                size: img.size,
+                modifiedAt: img.modifiedAt,
+                url: links.url,
+                publicUrl: links.publicUrl,
+                absolutePath: img.absolutePath
+            };
+        });
 
         res.json({
             success: true,
@@ -1270,7 +1310,6 @@ app.post('/upload-kml', authenticateToken, upload.single('kmlFile'), async (req,
 app.post('/save', authenticateToken, async (req, res) => {
     try {
         const userDirs = getUserDirs(req.user.username);
-        const baseUrl = getRequestBaseUrl(req);
         const newData = req.body;
         newData.id = Date.now();
         newData.timestamp = new Date().toISOString();
@@ -1290,16 +1329,19 @@ app.post('/save', authenticateToken, async (req, res) => {
             throw new Error('Save operation failed to generate pipeline files');
         }
 
-        const mergeImages = getMergeImageEntries(req.user.username).map((img) => ({
-            side: img.side,
-            lane: img.lane,
-            fileName: img.fileName,
-            size: img.size,
-            modifiedAt: img.modifiedAt,
-            url: `/api/public-image?path=${encodeURIComponent(img.absolutePath)}`,
-            publicUrl: `${baseUrl}/api/public-image?path=${encodeURIComponent(img.absolutePath)}`,
-            absolutePath: img.absolutePath
-        }));
+        const mergeImages = getMergeImageEntries(req.user.username).map((img) => {
+            const links = publicImageLinks(req, img.absolutePath);
+            return {
+                side: img.side,
+                lane: img.lane,
+                fileName: img.fileName,
+                size: img.size,
+                modifiedAt: img.modifiedAt,
+                url: links.url,
+                publicUrl: links.publicUrl,
+                absolutePath: img.absolutePath
+            };
+        });
 
         res.json({
             success: true,
