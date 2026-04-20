@@ -277,6 +277,21 @@ def _run_rotation_chain_for_folder(image_folder, direction):
         direction = "down_to_up"
 
     rotating_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "rotating")
+    required_scripts = ["1.py", "2.py", "3.py", "4.py"]
+    if direction == "up_to_down":
+        required_scripts.append("5.py")
+    missing_scripts = [
+        script_name
+        for script_name in required_scripts
+        if not os.path.isfile(os.path.join(rotating_dir, script_name))
+    ]
+    if missing_scripts:
+        print(
+            f"WARN: Rotation scripts missing ({', '.join(missing_scripts)}) in {rotating_dir}. "
+            "Skipping rotation and keeping original images."
+        )
+        return 0
+
     python_exe = sys.executable or "python"
     work_root = os.path.join(image_folder, "_rotation_work")
     if os.path.exists(work_root):
