@@ -17,7 +17,7 @@ const util = require('util');
 const execPromise = util.promisify(exec);
 
 const app = express();
-const PORT = process.env.PORT || 3001;
+const PORT = process.env.PORT || 9008;
 const JWT_SECRET = process.env.JWT_SECRET || 'kml_secret_key_2026';
 const HARDCODED_TEST_USER = 'test';
 const HARDCODED_TEST_PASSWORD = '123';

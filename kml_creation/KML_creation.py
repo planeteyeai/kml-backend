@@ -255,10 +255,13 @@ def _normalize_iso_date(date_str):
 
 def _run_rotation_chain_for_folder(image_folder, direction):
     """
-    Run the requested image-rotation pipeline using backend/rotating scripts.
-    down_to_up: 1 -> 2 -> 3 -> 4
-    up_to_down: 1 -> 2 -> 3 -> 4 -> 5
-    Final images replace the originals in image_folder.
+    Run backend/rotating/*.py on merge and lane images (see IMAGE_DIRECTION env).
+
+    Maps to UI direction (App.js):
+      - down_to_up  ("South To North"): 1.py -> 2.py -> 3.py -> 4.py
+      - up_to_down  ("North To South"): 1.py -> 2.py -> 3.py -> 4.py -> 5.py
+
+    Final images replace originals in image_folder. Requires opencv-python-headless.
     """
     if not os.path.isdir(image_folder):
         return 0
@@ -302,15 +305,29 @@ def _run_rotation_chain_for_folder(image_folder, direction):
         args = [python_exe, script_path, *stage_map[script_name]]
         proc = subprocess.run(args, capture_output=True, text=True)
         if proc.returncode != 0:
+            err = (proc.stderr or "").strip() or (proc.stdout or "").strip()
             raise RuntimeError(
-                f"Rotation script {script_name} failed for {image_folder}: "
-                f"{proc.stderr.strip() or proc.stdout.strip()}"
+                f"Rotation script {script_name} failed for {image_folder}: {err}"
             )
+
+    if not os.path.isdir(final_dir):
+        shutil.rmtree(work_root, ignore_errors=True)
+        print(f"WARN: Rotation final dir missing for {image_folder}, keeping originals.")
+        return 0
 
     final_files = [
         f for f in os.listdir(final_dir)
         if f.lower().endswith((".png", ".jpg", ".jpeg", ".bmp"))
     ]
+    if not final_files and files:
+        shutil.rmtree(work_root, ignore_errors=True)
+        print(
+            f"WARN: Rotation chain produced no images for {image_folder} "
+            f"(direction={direction}); keeping originals. "
+            "Check OpenCV (opencv-python-headless) and rotating/*.py logs."
+        )
+        return 0
+
     for name in files:
         src = os.path.join(image_folder, name)
         if os.path.isfile(src):

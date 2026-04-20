@@ -18,7 +18,7 @@ for root, dirs, files in os.walk(input_base):
 
     for file in files:
 
-        if not file.lower().endswith((".jpg", ".jpeg", ".png")):
+        if not file.lower().endswith((".jpg", ".jpeg", ".png", ".bmp")):
             continue
 
         input_path = os.path.join(root, file)

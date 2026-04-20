@@ -1,5 +1,6 @@
 # KML_creation.py pipeline (used by server.js processWithPython)
 numpy>=1.24
+opencv-python-headless>=4.8
 pandas>=2.0
 pyproj>=3.6
 geopy>=2.4

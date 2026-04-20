@@ -17,7 +17,7 @@ os.makedirs(output_folder, exist_ok=True)
 # ==============================
 for file in os.listdir(input_folder):
 
-    if file.lower().endswith((".jpg", ".jpeg", ".png")):
+    if file.lower().endswith((".jpg", ".jpeg", ".png", ".bmp")):
         input_path = os.path.join(input_folder, file)
         output_path = os.path.join(output_folder, file)
 

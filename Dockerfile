@@ -34,13 +34,13 @@ COPY . .
 
 # Set environment variables
 ENV NODE_ENV=production
-ENV PORT=3001
+ENV PORT=9008
 ENV DATA_DIR=/app/data
 
 # Create data directory with proper permissions
 RUN mkdir -p data/users && chmod -R 777 data
 
-EXPOSE 3001
+EXPOSE 9008
 
 # Start the application
 CMD ["node", "server.js"]
