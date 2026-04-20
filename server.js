@@ -12,6 +12,7 @@ const { kml } = require('@tmcw/togeojson');
 const { DOMParser } = require('xmldom');
 const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
+const sqlite3 = require('sqlite3').verbose();
 
 const { exec } = require('child_process');
 const util = require('util');
@@ -29,6 +30,132 @@ const DATA_DIR = process.env.DATA_DIR
     ? path.resolve(process.env.DATA_DIR)
     : path.join(__dirname, 'data');
 const USERS_FILE = path.join(DATA_DIR, 'users.json');
+const IMAGE_DB_FILE = path.join(DATA_DIR, 'kml_images.db');
+let imageDb = null;
+
+function openImageDb() {
+    if (imageDb) return imageDb;
+    imageDb = new sqlite3.Database(IMAGE_DB_FILE, (err) => {
+        if (err) {
+            console.error('[DB] Failed to open SQLite DB:', err);
+        } else {
+            console.log(`[DB] SQLite ready: ${IMAGE_DB_FILE}`);
+        }
+    });
+    return imageDb;
+}
+
+function dbRun(sql, params = []) {
+    const db = openImageDb();
+    return new Promise((resolve, reject) => {
+        db.run(sql, params, function onRun(err) {
+            if (err) return reject(err);
+            resolve(this);
+        });
+    });
+}
+
+function dbAll(sql, params = []) {
+    const db = openImageDb();
+    return new Promise((resolve, reject) => {
+        db.all(sql, params, (err, rows) => {
+            if (err) return reject(err);
+            resolve(rows);
+        });
+    });
+}
+
+async function initImageDb() {
+    await dbRun(`
+        CREATE TABLE IF NOT EXISTS user_images (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            username TEXT NOT NULL,
+            side TEXT NOT NULL,
+            lane TEXT,
+            file_name TEXT NOT NULL,
+            absolute_path TEXT NOT NULL,
+            size INTEGER NOT NULL DEFAULT 0,
+            modified_at TEXT,
+            created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            UNIQUE(username, absolute_path)
+        );
+    `);
+    await dbRun(`
+        CREATE INDEX IF NOT EXISTS idx_user_images_username_modified
+        ON user_images(username, modified_at DESC);
+    `);
+}
+
+async function syncUserImagesToDb(username, entries) {
+    const safeUsername = String(username || '').trim();
+    if (!safeUsername) return;
+    const safeEntries = Array.isArray(entries) ? entries : [];
+    await dbRun('BEGIN TRANSACTION');
+    try {
+        for (const img of safeEntries) {
+            await dbRun(
+                `
+                INSERT INTO user_images (username, side, lane, file_name, absolute_path, size, modified_at, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+                ON CONFLICT(username, absolute_path) DO UPDATE SET
+                    side = excluded.side,
+                    lane = excluded.lane,
+                    file_name = excluded.file_name,
+                    size = excluded.size,
+                    modified_at = excluded.modified_at,
+                    updated_at = CURRENT_TIMESTAMP
+                `,
+                [
+                    safeUsername,
+                    String(img.side || ''),
+                    String(img.lane || ''),
+                    String(img.fileName || ''),
+                    String(img.absolutePath || ''),
+                    Number(img.size || 0),
+                    img.modifiedAt ? new Date(img.modifiedAt).toISOString() : null,
+                ]
+            );
+        }
+
+        if (safeEntries.length > 0) {
+            const paths = safeEntries.map((img) => String(img.absolutePath || ''));
+            const placeholders = paths.map(() => '?').join(',');
+            await dbRun(
+                `DELETE FROM user_images WHERE username = ? AND absolute_path NOT IN (${placeholders})`,
+                [safeUsername, ...paths]
+            );
+        } else {
+            await dbRun('DELETE FROM user_images WHERE username = ?', [safeUsername]);
+        }
+        await dbRun('COMMIT');
+    } catch (err) {
+        await dbRun('ROLLBACK');
+        throw err;
+    }
+}
+
+async function getStoredMergeImageEntries(username) {
+    const safeUsername = String(username || '').trim();
+    if (!safeUsername) return [];
+    const rows = await dbAll(
+        `
+        SELECT side, lane, file_name, size, modified_at, absolute_path
+        FROM user_images
+        WHERE username = ?
+        ORDER BY datetime(modified_at) DESC, id DESC
+        `,
+        [safeUsername]
+    );
+    return rows.map((row) => ({
+        side: row.side,
+        lane: row.lane,
+        fileName: row.file_name,
+        size: Number(row.size || 0),
+        modifiedAt: row.modified_at ? new Date(row.modified_at) : null,
+        absolutePath: row.absolute_path,
+    }));
+}
 
 // Helper to get user-specific directories
 function getUserDirs(username) {
@@ -71,6 +198,9 @@ function ensureDirectories() {
 }
 
 ensureDirectories();
+initImageDb().catch((error) => {
+    console.error('[DB] SQLite init failed:', error);
+});
 
 app.use(cors({
     origin: '*',
@@ -154,7 +284,7 @@ app.post('/api/login', (req, res) => {
  * (LHS_images, RHS_images, LHS_kml_merge_images, RHS_kml_merge_images) as base64 in "images".
  * Size cap: env MAX_LOGIN_IMAGES_JSON_BYTES (default 200 MB raw total before base64); raise if needed.
  */
-app.post('/api/login/images', (req, res) => {
+app.post('/api/login/images', async (req, res) => {
     try {
         const { username, password } = req.body || {};
         const u = String(username || '').trim();
@@ -172,9 +302,17 @@ app.post('/api/login/images', (req, res) => {
         const token = jwt.sign({ username: tokenUsername }, JWT_SECRET);
 
         const raw = getMergeImageEntries(tokenUsername);
+        let sourceEntries = raw;
+        try {
+            await syncUserImagesToDb(tokenUsername, raw);
+            const stored = await getStoredMergeImageEntries(tokenUsername);
+            if (stored.length > 0) sourceEntries = stored;
+        } catch (dbError) {
+            console.error('SQLite sync/read failed, using filesystem fallback:', dbError);
+        }
         const baseUrl = getRequestBaseUrl(req);
 
-        const images = raw.map((img) => {
+        const images = sourceEntries.map((img) => {
             const access = createPublicImageAccessToken(tokenUsername, img.absolutePath);
             const encodedPath = encodeURIComponent(img.absolutePath);
             const encodedAccess = encodeURIComponent(access);
