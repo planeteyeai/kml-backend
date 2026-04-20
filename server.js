@@ -1431,7 +1431,9 @@ app.post('/api/distress-imagewise', authenticateToken, async (req, res) => {
     try {
         const username = req.user.username;
         const subPath = String((req.body && req.body.path) || req.query.path || '').trim();
-        const distressBase = String(process.env.DISTRESS_API_BASE || 'http://127.0.0.1:8000').replace(/\/+$/, '');
+        const distressBase = String(
+            process.env.DISTRESS_API_BASE || 'https://distressanalyzerv2-0.up.railway.app'
+        ).replace(/\/+$/, '');
 
         const imageSources = getDistressImageSources(username, subPath);
         if (!imageSources.length) {
