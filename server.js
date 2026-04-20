@@ -312,7 +312,10 @@ app.post('/api/login/images', async (req, res) => {
         }
         const baseUrl = getRequestBaseUrl(req);
 
-        const images = sourceEntries.map((img) => {
+        // For /api/login/images return only lane/per-image outputs and exclude merge-strip images.
+        const filteredEntries = sourceEntries.filter((img) => !isMergeKmlStripPath(img.absolutePath));
+
+        const images = filteredEntries.map((img) => {
             const access = createPublicImageAccessToken(tokenUsername, img.absolutePath);
             const encodedPath = encodeURIComponent(img.absolutePath);
             const encodedAccess = encodeURIComponent(access);
