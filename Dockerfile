@@ -36,6 +36,10 @@ COPY . .
 ENV NODE_ENV=production
 ENV PORT=9008
 ENV DATA_DIR=/app/data
+# Optional overrides for public URLs and large login/images responses
+ENV PUBLIC_BASE_URL=
+ENV PUBLIC_IP=
+ENV MAX_LOGIN_IMAGES_JSON_BYTES=209715200
 
 # Create data directory with proper permissions
 RUN mkdir -p data/users && chmod -R 777 data

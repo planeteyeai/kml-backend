@@ -1,0 +1,46 @@
+COMMAND: python C:\Users\Rudra.Joshi\Desktop\kml_web\backend\kml_creation\KML_creation.py C:\Users\Rudra.Joshi\Desktop\kml_web\backend\data\users\rudra\kml_creation\input.kml C:\Users\Rudra.Joshi\Desktop\kml_web\backend\data\users\rudra\pipeline 0 5 2 0.1 3.4 0.001
+
+STDOUT:
+0) Initializing output folders in C:\Users\Rudra.Joshi\Desktop\kml_web\backend\data\users\rudra\pipeline...
+1) Reading input KML & interpolating...
+2) Saving chainage Excel...
+  [OK] Saved: C:\Users\Rudra.Joshi\Desktop\kml_web\backend\data\users\rudra\pipeline\Excels\chainage_points.xlsx
+-> Creating 5m chainage Line + Point KML...
+-> Chainage Line + Point KML saved: C:\Users\Rudra.Joshi\Desktop\kml_web\backend\data\users\rudra\pipeline\Merge_KMLs\line_polygons_chainage.kml
+2) Computing Median_LHS & Median_RHS (offset = 0.001 m)...
+  [OK] Saved: C:\Users\Rudra.Joshi\Desktop\kml_web\backend\data\users\rudra\pipeline\Excels\median_lhs_offset.xlsx
+  [OK] Saved: C:\Users\Rudra.Joshi\Desktop\kml_web\backend\data\users\rudra\pipeline\Excels\median_rhs_offset.xlsx
+3) Generating lane layers for LANE_COUNT = 2 ...
+-> Left layers created: {'LHS_L1': 'C:\\Users\\Rudra.Joshi\\Desktop\\kml_web\\backend\\data\\users\\rudra\\pipeline\\Excels\\LHS_L1.xlsx'}
+-> Right layers created: {'RHS_L1': 'C:\\Users\\Rudra.Joshi\\Desktop\\kml_web\\backend\\data\\users\\rudra\\pipeline\\Excels\\RHS_L1.xlsx'}
+4) Preparing layer pairings for KML generation...
+  [OK] LHS_L1 pair (median -> LHS_L1) added
+  [OK] RHS_L1 pair (median -> RHS_L1) added
+5) Generating per-layer binned KMLs ...
+  -> Generated 6 bin-KMLs for LHS_L1 in C:\Users\Rudra.Joshi\Desktop\kml_web\backend\data\users\rudra\pipeline\LHS_KMLs\LHS_L1
+  -> Generated 6 bin-KMLs for RHS_L1 in C:\Users\Rudra.Joshi\Desktop\kml_web\backend\data\users\rudra\pipeline\RHS_KMLs\RHS_L1
+6) Merging layer folders into single KMLs in Merge_KMLs ...
+  -> Merged LHS_L1 -> C:\Users\Rudra.Joshi\Desktop\kml_web\backend\data\users\rudra\pipeline\Merge_KMLs\LHS_L1_merge.kml
+  -> Merged RHS_L1 -> C:\Users\Rudra.Joshi\Desktop\kml_web\backend\data\users\rudra\pipeline\Merge_KMLs\RHS_L1_merge.kml
+6.1) Merging side files into LHS_merge / RHS_merge ...
+  -> Side merged file: C:\Users\Rudra.Joshi\Desktop\kml_web\backend\data\users\rudra\pipeline\Merge_KMLs\LHS_merge.kml
+  -> Side merged file: C:\Users\Rudra.Joshi\Desktop\kml_web\backend\data\users\rudra\pipeline\Merge_KMLs\RHS_merge.kml
+7) Populating LHS_kml_merge / RHS_kml_merge ...
+  -> Side merge folder: C:\Users\Rudra.Joshi\Desktop\kml_web\backend\data\users\rudra\pipeline\LHS_KMLs\LHS_kml_merge
+  -> Side merge folder: C:\Users\Rudra.Joshi\Desktop\kml_web\backend\data\users\rudra\pipeline\RHS_KMLs\RHS_kml_merge
+8) Generating lane-wise road images for LHS / RHS ...
+[IMG] Using consistent acquisition date for LHS: 2026-02-12
+  -> LHS rotated images: 6 files using down_to_up
+  -> LHS images: 6 files in C:\Users\Rudra.Joshi\Desktop\kml_web\backend\data\users\rudra\pipeline\LHS_KMLs\LHS_images
+  -> LHS merge rotated images: 6 files using down_to_up
+  -> LHS merge images: 6 files in C:\Users\Rudra.Joshi\Desktop\kml_web\backend\data\users\rudra\pipeline\LHS_KMLs\LHS_kml_merge_images
+[IMG] Using consistent acquisition date for RHS: 2026-02-12
+  -> RHS rotated images: 6 files using down_to_up
+  -> RHS images: 6 files in C:\Users\Rudra.Joshi\Desktop\kml_web\backend\data\users\rudra\pipeline\RHS_KMLs\RHS_images
+  -> RHS merge rotated images: 6 files using down_to_up
+  -> RHS merge images: 6 files in C:\Users\Rudra.Joshi\Desktop\kml_web\backend\data\users\rudra\pipeline\RHS_KMLs\RHS_kml_merge_images
+ALL DONE
+Output folder: C:\Users\Rudra.Joshi\Desktop\kml_web\backend\data\users\rudra\pipeline
+
+
+STDERR:

@@ -1,1 +1,42 @@
-[]
+[
+  {
+    "metadata": {
+      "chainage": "0",
+      "offsetType": "0.001",
+      "laneCount": "2",
+      "kmlMergeOffset": "0.100",
+      "startDate": "2026-02-10",
+      "endDate": "2026-02-20",
+      "imageDirection": "down_to_up"
+    },
+    "geometry": [
+      {
+        "type": "Feature",
+        "properties": {},
+        "geometry": {
+          "type": "LineString",
+          "coordinates": [
+            [
+              73.856213,
+              18.516189
+            ],
+            [
+              73.856342,
+              18.515171
+            ],
+            [
+              73.857265,
+              18.513767
+            ],
+            [
+              73.857887,
+              18.511895
+            ]
+          ]
+        }
+      }
+    ],
+    "id": 1776662593173,
+    "timestamp": "2026-04-20T05:23:13.173Z"
+  }
+]
