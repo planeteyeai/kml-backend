@@ -147,7 +147,6 @@ app.post('/api/login', (req, res) => {
     }
 });
 
-<<<<<<< HEAD
 /**
  * POST /api/login/images
  * Body JSON (only these two fields): { "username", "password" }
@@ -308,9 +307,6 @@ function createPublicImageAccessToken(username, absolutePath) {
     );
 }
 
-// Authentication disabled: accept requests without token and resolve a username
-// from request context. This keeps per-user folders separate without JWT.
-=======
 /** JWT from Authorization: Bearer or ?token= (GET / img / window.open). */
 function extractBearerToken(req) {
     const authHeader = req.headers && req.headers.authorization;
@@ -322,8 +318,6 @@ function extractBearerToken(req) {
     if (q && typeof q === 'string' && q.trim()) return q.trim();
     return null;
 }
-
->>>>>>> 7321bc592dbb7c1148191802e7facbd2b67358a2
 const authenticateToken = (req, res, next) => {
     const token = extractBearerToken(req);
     if (!token) {
@@ -763,7 +757,6 @@ function clearUserWorkingData(userDirs, username, options = {}) {
 // Pipeline is now explicitly called in /save and /upload-kml routes.
 
 // Routes
-<<<<<<< HEAD
 app.get('/api/merge-images/:username', requireMergeImagesAccess, (req, res) => {
     try {
         const username = (req.params.username || '').trim();
@@ -775,17 +768,6 @@ app.get('/api/merge-images/:username', requireMergeImagesAccess, (req, res) => {
         // all / lanes / (empty) = everything getMergeImageEntries finds (merge strips + per-lane images).
         const onlyMergeKml = ['1', 'true', 'yes', 'merge_kml', 'merge'].includes(onlyRaw);
         const onlyLanes = ['lanes', 'lane', 'per_lane', 'lhs_images', 'rhs_images'].includes(onlyRaw);
-        const baseUrl = getRequestBaseUrl(req);
-=======
-app.get('/api/merge-images/:username', authenticateToken, (req, res) => {
-    try {
-        if (!assertRouteUsername(req, res, req.params.username)) return;
-        const username = req.user.username;
-        const onlyMergeKml =
-            ['1', 'true', 'yes', 'merge_kml', 'merge'].includes(
-                String(req.query.only || req.query.merge_only || '').toLowerCase()
-            );
->>>>>>> 7321bc592dbb7c1148191802e7facbd2b67358a2
         let raw = getMergeImageEntries(username);
         const unfilteredCount = raw.length;
         if (onlyMergeKml) {
@@ -837,11 +819,7 @@ app.get('/api/merge-images/:username', authenticateToken, (req, res) => {
     }
 });
 
-<<<<<<< HEAD
 app.get('/api/merge-images/:username/:side/:fileName', requireMergeImagesAccess, (req, res) => {
-=======
-app.get('/api/merge-images/:username/:side/:fileName', authenticateToken, (req, res) => {
->>>>>>> 7321bc592dbb7c1148191802e7facbd2b67358a2
     try {
         if (!assertRouteUsername(req, res, req.params.username)) return;
         const { side } = req.params;
@@ -935,11 +913,7 @@ function collectMergeKmlFolderFiles(username, side, options = {}) {
     return out;
 }
 
-<<<<<<< HEAD
 app.get('/api/merge-kml-images-zip/:username/:side', requireMergeImagesAccess, (req, res) => {
-=======
-app.get('/api/merge-kml-images-zip/:username/:side', authenticateToken, (req, res) => {
->>>>>>> 7321bc592dbb7c1148191802e7facbd2b67358a2
     try {
         if (!assertRouteUsername(req, res, req.params.username)) return;
         const username = req.user.username;
@@ -1023,11 +997,7 @@ function listMergeKmlStripFiles(username, side) {
  * GET /api/merge-kml-images-data/:username/:side  — side: lhs | rhs | both
  * Optional: ?maxBytes=52428800 (default cap on total raw bytes before base64; env MAX_MERGE_KML_JSON_BYTES)
  */
-<<<<<<< HEAD
 app.get('/api/merge-kml-images-data/:username/:side', requireMergeImagesAccess, (req, res) => {
-=======
-app.get('/api/merge-kml-images-data/:username/:side', authenticateToken, (req, res) => {
->>>>>>> 7321bc592dbb7c1148191802e7facbd2b67358a2
     try {
         if (!assertRouteUsername(req, res, req.params.username)) return;
         const username = req.user.username;
@@ -1096,15 +1066,10 @@ app.get('/api/merge-kml-images-data/:username/:side', authenticateToken, (req, r
     }
 });
 
-<<<<<<< HEAD
 // Authenticated: fetch image by full path (must lie under the caller's data/users/<username>/ folder).
 // Example:
 // /api/public-image?path=C:\Users\...\backend\data\users\rudra\pipeline\LHS_KMLs\LHS_kml_merge_images\file.png
 app.get('/api/public-image', (req, res) => {
-=======
-// Authenticated: only files under data/users/<jwt-username>/...
-app.get('/api/public-image', authenticateToken, (req, res) => {
->>>>>>> 7321bc592dbb7c1148191802e7facbd2b67358a2
     try {
         let authedUsername = null;
         const accessToken = String(req.query.access || '').trim();
@@ -1128,19 +1093,11 @@ app.get('/api/public-image', authenticateToken, (req, res) => {
         }
 
         const dataUsersRoot = path.resolve(DATA_DIR, 'users');
-<<<<<<< HEAD
         const allowedUserRoot = path.resolve(dataUsersRoot, authedUsername);
         const normalizedRequestedPath = path.resolve(requestedPath);
 
         if (!normalizedRequestedPath.startsWith(dataUsersRoot + path.sep)) {
             return res.status(403).json({ success: false, message: 'Access denied. Path must be inside backend/data/users' });
-=======
-        const userRoot = path.resolve(dataUsersRoot, req.user.username);
-        const normalizedRequestedPath = path.resolve(requestedPath);
-
-        if (!normalizedRequestedPath.startsWith(userRoot + path.sep)) {
-            return res.status(403).json({ success: false, message: 'Access denied. Path must be inside your user folder.' });
->>>>>>> 7321bc592dbb7c1148191802e7facbd2b67358a2
         }
 
         const relToUser = path.relative(allowedUserRoot, normalizedRequestedPath);
