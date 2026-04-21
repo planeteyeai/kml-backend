@@ -797,6 +797,72 @@ function getMergeImageEntries(username) {
     return images;
 }
 
+function collectImageFilesFromPath(targetPath) {
+    const imageExtRegex = /\.(png|jpe?g|gif|webp|bmp)$/i;
+    const out = [];
+    const walk = (dir) => {
+        let entries = [];
+        try {
+            entries = fs.readdirSync(dir, { withFileTypes: true });
+        } catch {
+            return;
+        }
+        for (const entry of entries) {
+            const abs = path.join(dir, entry.name);
+            if (entry.isDirectory()) {
+                walk(abs);
+            } else if (entry.isFile() && imageExtRegex.test(entry.name)) {
+                out.push(abs);
+            }
+        }
+    };
+    walk(targetPath);
+    return out;
+}
+
+function mimeTypeForFile(filePath) {
+    const ext = path.extname(String(filePath || '')).toLowerCase();
+    if (ext === '.png') return 'image/png';
+    if (ext === '.jpg' || ext === '.jpeg') return 'image/jpeg';
+    if (ext === '.gif') return 'image/gif';
+    if (ext === '.webp') return 'image/webp';
+    if (ext === '.bmp') return 'image/bmp';
+    return 'application/octet-stream';
+}
+
+function getDistressImageSources(username, pipelineSubPath = '') {
+    const userDirs = getUserDirs(username);
+    const trimmedPath = String(pipelineSubPath || '').trim();
+
+    // Default: use merge-strip images generated from KML pipeline.
+    if (!trimmedPath) {
+        const mergeEntries = getMergeImageEntries(username).filter((img) =>
+            isMergeKmlStripPath(img.absolutePath)
+        );
+        return mergeEntries.map((img) => ({
+            absolutePath: img.absolutePath,
+            displayName: img.fileName,
+        }));
+    }
+
+    const resolvedPath = path.resolve(userDirs.pipelineDir, trimmedPath);
+    if (!resolvedPath.startsWith(userDirs.pipelineDir)) {
+        throw new Error('Invalid pipeline path');
+    }
+    if (!fs.existsSync(resolvedPath) || !fs.statSync(resolvedPath).isDirectory()) {
+        throw new Error('Pipeline folder not found');
+    }
+    if (!/(^|[/\\])(LHS|RHS)_kml_merge_images$/i.test(resolvedPath.replace(/\\/g, '/'))) {
+        throw new Error('Only *_kml_merge_images folders are allowed');
+    }
+
+    const files = collectImageFilesFromPath(resolvedPath);
+    return files.map((absolutePath) => ({
+        absolutePath,
+        displayName: path.basename(absolutePath),
+    }));
+}
+
 /** True only for flat strip PNGs in *_kml_merge_images (excludes LHS_images/L1 etc.). */
 function isMergeKmlStripPath(absolutePath) {
     return /[/\\](LHS|RHS)_kml_merge_images[/\\]/i.test(absolutePath || '');
@@ -1348,6 +1414,62 @@ app.get('/pipeline-folders', authenticateToken, (req, res) => {
         res.json({ success: true, items: contents, currentPath: subPath });
     } catch (error) {
         res.status(500).json({ success: false, message: 'Error listing folders' });
+    }
+});
+
+app.post('/api/distress-imagewise', authenticateToken, async (req, res) => {
+    try {
+        const username = req.user.username;
+        const subPath = String((req.body && req.body.path) || req.query.path || '').trim();
+        const distressBase = String(
+            process.env.DISTRESS_API_BASE || 'https://distressanalyzerv2-0.up.railway.app'
+        ).replace(/\/+$/, '');
+
+        const imageSources = getDistressImageSources(username, subPath);
+        if (!imageSources.length) {
+            return res.status(404).json({
+                success: false,
+                message: 'No generated images found for distress processing.',
+            });
+        }
+
+        const formData = new FormData();
+        imageSources.forEach((img) => {
+            formData.append('files', fs.createReadStream(img.absolutePath), {
+                filename: img.displayName,
+                contentType: mimeTypeForFile(img.absolutePath),
+            });
+        });
+
+        const distressResponse = await axios.post(
+            `${distressBase}/process-rotated-images-batch/`,
+            formData,
+            {
+                headers: formData.getHeaders(),
+                maxContentLength: Infinity,
+                maxBodyLength: Infinity,
+                timeout: Number(process.env.DISTRESS_BATCH_TIMEOUT_MS || 600000),
+            }
+        );
+
+        // Return distress API response directly.
+        return res.status(distressResponse.status).json(distressResponse.data || { results_by_image: {} });
+    } catch (error) {
+        const messageText = String(error.message || '').toLowerCase();
+        const status = error.response && error.response.status
+            ? error.response.status
+            : messageText.includes('not found')
+                ? 404
+                : messageText.includes('invalid pipeline path')
+                    ? 400
+                    : messageText.includes('only *_kml_merge_images folders are allowed')
+                        ? 400
+                    : 500;
+        const detail =
+            (error.response && error.response.data) ||
+            { error: error.message || 'Unknown distress pipeline error' };
+        console.error('Error in /api/distress-imagewise:', detail);
+        return res.status(status).json(detail);
     }
 });
 
