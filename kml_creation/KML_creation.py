@@ -16,6 +16,8 @@ import os
 import re
 import math
 import json
+import time
+import random
 import shutil
 import subprocess
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -99,9 +101,25 @@ EE_PROJECT = os.environ.get("EE_PROJECT", "").strip()
 EE_FOCAL_MEAN_RADIUS_M = float(os.environ.get("EE_FOCAL_MEAN_RADIUS_M", "5"))
 EE_VIS_MAX_REFLECTANCE = float(os.environ.get("EE_VIS_MAX_REFLECTANCE", "0.35"))
 IMAGE_DIRECTION = os.environ.get("IMAGE_DIRECTION", "down_to_up").strip().lower() or "down_to_up"
+IMAGE_GEN_CHUNK_SIZE = int(os.environ.get("IMAGE_GEN_CHUNK_SIZE", "18"))
+IMAGE_GEN_CHUNK_BASE_DELAY_SEC = float(os.environ.get("IMAGE_GEN_CHUNK_BASE_DELAY_SEC", "0.35"))
+IMAGE_GEN_CHUNK_MAX_DELAY_SEC = float(os.environ.get("IMAGE_GEN_CHUNK_MAX_DELAY_SEC", "8.0"))
+IMAGE_GEN_CHUNK_BACKOFF_MULTIPLIER = float(os.environ.get("IMAGE_GEN_CHUNK_BACKOFF_MULTIPLIER", "1.8"))
+IMAGE_GEN_CHUNK_SUCCESS_DECAY = float(os.environ.get("IMAGE_GEN_CHUNK_SUCCESS_DECAY", "0.7"))
+SATELLITE_HTTP_MAX_RETRIES = int(os.environ.get("SATELLITE_HTTP_MAX_RETRIES", "5"))
+SATELLITE_HTTP_BACKOFF_BASE_SEC = float(os.environ.get("SATELLITE_HTTP_BACKOFF_BASE_SEC", "0.8"))
+SATELLITE_HTTP_BACKOFF_MAX_SEC = float(os.environ.get("SATELLITE_HTTP_BACKOFF_MAX_SEC", "12.0"))
+SATELLITE_INTER_BAND_DELAY_SEC = float(os.environ.get("SATELLITE_INTER_BAND_DELAY_SEC", "0.15"))
+SATELLITE_FETCH_MAX_EDGE_PX = int(os.environ.get("SATELLITE_FETCH_MAX_EDGE_PX", "8192"))
+SATELLITE_MAX_PARALLEL_BAND_FETCH = int(os.environ.get("SATELLITE_MAX_PARALLEL_BAND_FETCH", "2"))
 
 # geodetic util
 geod = Geod(ellps="WGS84")
+_http_session = requests.Session()
+_band_fetch_slots = None
+if SATELLITE_MAX_PARALLEL_BAND_FETCH > 0:
+    import threading
+    _band_fetch_slots = threading.BoundedSemaphore(max(1, SATELLITE_MAX_PARALLEL_BAND_FETCH))
 
 # output folders
 KML_LHS_FOLDER = os.path.join(OUTPUT_FOLDER, "LHS_KMLs")
@@ -474,6 +492,46 @@ def _apply_bright_red_gradient(img, gamma=1.25):
     return Image.merge("RGB", (r, g, b))
 
 
+def _http_request_with_retry(method, url, timeout, retry_statuses=None, **kwargs):
+    """
+    Retry transient network/rate-limit failures with exponential backoff + jitter.
+    Keeps logic same while improving reliability for large KML batches.
+    """
+    retry_statuses = retry_statuses or {429, 500, 502, 503, 504}
+    retries = max(1, SATELLITE_HTTP_MAX_RETRIES)
+    backoff_base = max(0.05, SATELLITE_HTTP_BACKOFF_BASE_SEC)
+    backoff_max = max(backoff_base, SATELLITE_HTTP_BACKOFF_MAX_SEC)
+
+    last_exc = None
+    for attempt in range(retries):
+        try:
+            rsp = _http_session.request(method, url, timeout=timeout, **kwargs)
+            # Retry selected status codes with respect for Retry-After when present.
+            if rsp.status_code in retry_statuses and attempt < retries - 1:
+                retry_after = rsp.headers.get("Retry-After")
+                if retry_after is not None:
+                    try:
+                        wait_s = float(retry_after)
+                    except Exception:
+                        wait_s = backoff_base * (2 ** attempt)
+                else:
+                    wait_s = backoff_base * (2 ** attempt)
+                wait_s = min(backoff_max, wait_s) + random.uniform(0.0, 0.35)
+                time.sleep(wait_s)
+                continue
+            rsp.raise_for_status()
+            return rsp
+        except requests.RequestException as exc:
+            last_exc = exc
+            if attempt >= retries - 1:
+                break
+            wait_s = min(backoff_max, backoff_base * (2 ** attempt)) + random.uniform(0.0, 0.35)
+            time.sleep(wait_s)
+    if last_exc is not None:
+        raise last_exc
+    raise RuntimeError("HTTP request failed without response.")
+
+
 def _stac_search(geom, datetime_range, limit=60, sort_desc=True):
     search_url = f"{STAC_API.rstrip('/')}/search"
     body = {
@@ -485,7 +543,13 @@ def _stac_search(geom, datetime_range, limit=60, sort_desc=True):
         "sortby": [{"field": "properties.datetime", "direction": "desc" if sort_desc else "asc"}],
     }
     try:
-        r = requests.post(search_url, json=body, timeout=40)
+        r = _http_request_with_retry(
+            "POST",
+            search_url,
+            json=body,
+            timeout=40,
+            retry_statuses={429, 500, 502, 503, 504},
+        )
         r.raise_for_status()
         return r.json().get("features", [])
     except Exception as e:
@@ -770,7 +834,12 @@ def _render_road_png_via_earth_engine(
         return False, None
 
     try:
-        rsp = requests.get(thumb_url, timeout=120)
+        rsp = _http_request_with_retry(
+            "GET",
+            thumb_url,
+            timeout=120,
+            retry_statuses={429, 500, 502, 503, 504},
+        )
         rsp.raise_for_status()
         src_img = Image.open(BytesIO(rsp.content)).convert("RGB")
     except Exception as e:
@@ -889,6 +958,12 @@ def render_kml_to_road_image(kml_path, out_png_path, width=SATELLITE_IMAGE_WIDTH
             fetch_scale = max(1, SATELLITE_FETCH_SCALE)
             fetch_w = render_w * fetch_scale
             fetch_h = render_h * fetch_scale
+            # Cap oversized requests to reduce 429s/timeouts on public Titiler.
+            max_edge = max(512, SATELLITE_FETCH_MAX_EDGE_PX)
+            if fetch_w > max_edge or fetch_h > max_edge:
+                scale = min(max_edge / fetch_w, max_edge / fetch_h)
+                fetch_w = max(1, int(round(fetch_w * scale)))
+                fetch_h = max(1, int(round(fetch_h * scale)))
             bbox_url = (
                 f"{TITILER_COG_API.rstrip('/')}/bbox/"
                 f"{min_lon},{min_lat},{max_lon},{max_lat}/{fetch_w}x{fetch_h}.png"
@@ -910,13 +985,23 @@ def render_kml_to_road_image(kml_path, out_png_path, width=SATELLITE_IMAGE_WIDTH
                     # Typical Sentinel-2 reflectance display window: 0..3000.
                     if SATELLITE_BAND_RESCALE:
                         params["rescale"] = SATELLITE_BAND_RESCALE
-                    rsp = requests.get(
-                        bbox_url,
-                        params=params,
-                        timeout=60,
-                    )
+                    if _band_fetch_slots is not None:
+                        _band_fetch_slots.acquire()
+                    try:
+                        rsp = _http_request_with_retry(
+                            "GET",
+                            bbox_url,
+                            params=params,
+                            timeout=60,
+                            retry_statuses={429, 500, 502, 503, 504},
+                        )
+                    finally:
+                        if _band_fetch_slots is not None:
+                            _band_fetch_slots.release()
                     rsp.raise_for_status()
                     band = Image.open(BytesIO(rsp.content)).convert("L")
+                    if SATELLITE_INTER_BAND_DELAY_SEC > 1e-9:
+                        time.sleep(SATELLITE_INTER_BAND_DELAY_SEC)
                     if hc_lut is not None:
                         return band.point(hc_lut)
                     return band
@@ -1081,22 +1166,115 @@ def generate_lane_kml_images(side_root, side_tag):
 
     def _run_one(job):
         src, dst_png, kind = job
-        ok, meta = render_kml_to_road_image(src, dst_png, forced_date=locked_date)
+        try:
+            ok, meta = render_kml_to_road_image(src, dst_png, forced_date=locked_date)
+        except Exception as exc:
+            return src, False, {"error": f"render_exception: {exc}"}, kind
+
+        # For big KMLs, satellite availability can fail for some merge segments.
+        # Ensure merge-strip images are still produced via synthetic fallback.
+        if (not ok) and kind == "merge":
+            try:
+                rings = _extract_polygon_rings_from_kml(src)
+                if rings:
+                    fb_ok, fb_meta = _render_synthetic_from_rings(
+                        rings,
+                        dst_png,
+                        width=SATELLITE_IMAGE_WIDTH,
+                        height=SATELLITE_IMAGE_HEIGHT,
+                    )
+                    if fb_ok:
+                        return src, True, {"fallback": "synthetic", "base_error": meta, "meta": fb_meta}, kind
+            except Exception as exc:
+                return src, False, {"error": f"merge_fallback_exception: {exc}", "base_error": meta}, kind
         return src, ok, meta, kind
 
     max_workers = max(1, min(IMAGE_GEN_MAX_WORKERS, len(jobs) if jobs else 1))
-    with ThreadPoolExecutor(max_workers=max_workers) as ex:
-        futures = [ex.submit(_run_one, j) for j in jobs]
-        for fut in as_completed(futures):
-            src, ok, meta, kind = fut.result()
-            if ok:
-                if kind == "merge":
-                    generated_merge += 1
+    # Satellite path makes multiple HTTP calls per KML; keep concurrency conservative
+    # to avoid API throttling while preserving throughput.
+    if max_workers > 3:
+        max_workers = 3
+    if len(jobs) >= 80:
+        # Large KML sets can exhaust memory/network when too many renders run in parallel.
+        max_workers = min(max_workers, 2)
+    def _is_rate_limited(meta):
+        if meta is None:
+            return False
+        if isinstance(meta, (dict, list)):
+            txt = json.dumps(meta, default=str).lower()
+        else:
+            txt = str(meta).lower()
+        return ("429" in txt) or ("too many requests" in txt) or ("rate limit" in txt)
+
+    chunk_size = max(1, min(IMAGE_GEN_CHUNK_SIZE, len(jobs) if jobs else 1))
+    adaptive_delay_s = 0.0
+    base_delay = max(0.0, IMAGE_GEN_CHUNK_BASE_DELAY_SEC)
+    max_delay = max(base_delay, IMAGE_GEN_CHUNK_MAX_DELAY_SEC)
+    backoff_mult = max(1.05, IMAGE_GEN_CHUNK_BACKOFF_MULTIPLIER)
+    success_decay = min(0.99, max(0.1, IMAGE_GEN_CHUNK_SUCCESS_DECAY))
+
+    for start_idx in range(0, len(jobs), chunk_size):
+        chunk = jobs[start_idx : start_idx + chunk_size]
+        if adaptive_delay_s > 1e-6:
+            print(
+                f"[IMG] Throttle pause for {side_upper}: {adaptive_delay_s:.2f}s "
+                f"before chunk {start_idx // chunk_size + 1}"
+            )
+            time.sleep(adaptive_delay_s)
+
+        chunk_failures = 0
+        chunk_rate_limits = 0
+        with ThreadPoolExecutor(max_workers=max_workers) as ex:
+            futures = [ex.submit(_run_one, j) for j in chunk]
+            for fut in as_completed(futures):
+                try:
+                    src, ok, meta, kind = fut.result()
+                except Exception as exc:
+                    print(f"[IMG] Worker failure: {exc}")
+                    chunk_failures += 1
+                    continue
+                if ok:
+                    if kind == "merge":
+                        generated_merge += 1
+                    else:
+                        generated_lane += 1
                 else:
-                    generated_lane += 1
-            else:
-                print(f"[IMG] Skipped {src}: {meta}")
+                    chunk_failures += 1
+                    if _is_rate_limited(meta):
+                        chunk_rate_limits += 1
+                    print(f"[IMG] Skipped {src}: {meta}")
+
+        if chunk_rate_limits > 0:
+            next_delay = base_delay if adaptive_delay_s <= 1e-6 else adaptive_delay_s
+            adaptive_delay_s = min(max_delay, next_delay * backoff_mult)
+            print(
+                f"[IMG] {side_upper} chunk hit rate limits ({chunk_rate_limits}/{len(chunk)}). "
+                f"Increasing delay to {adaptive_delay_s:.2f}s."
+            )
+        elif chunk_failures == 0 and adaptive_delay_s > 1e-6:
+            adaptive_delay_s *= success_decay
+            if adaptive_delay_s < base_delay * 0.5:
+                adaptive_delay_s = 0.0
     return lane_out_root, generated_lane, merge_out_root, generated_merge
+
+
+def _generate_and_rotate_side_images(side_root, side_tag, image_direction):
+    """
+    Run full image generation + rotation for one side.
+    Returned dict is used for parallel side execution logging in run_pipeline().
+    """
+    out_dir, count, merge_out_dir, merge_count = generate_lane_kml_images(side_root, side_tag)
+    rotated = _run_rotation_chain_for_side_images(out_dir, image_direction)
+    rotated_merge = _run_rotation_chain_for_folder(merge_out_dir, image_direction)
+    return {
+        "side": side_tag.upper(),
+        "out_dir": out_dir,
+        "count": count,
+        "merge_out_dir": merge_out_dir,
+        "merge_count": merge_count,
+        "rotated": rotated,
+        "rotated_merge": rotated_merge,
+    }
 
 def read_linestring_from_kml(kml_path):
     """Read all <coordinates> from KML and return a combined list of (lon, lat)."""
@@ -1657,20 +1835,28 @@ def run_pipeline():
         print(f"  -> Generated {len(outs)} bin-KMLs for {layer_tag} in {out_folder}")
 
     # 6) Merge each layer folder into a single KML under Merge_KMLs
-    print("6) Merging layer folders into single KMLs in Merge_KMLs ...")
-    for sub in os.listdir(KML_LHS_FOLDER):
-        layer_dir = os.path.join(KML_LHS_FOLDER, sub)
-        if os.path.isdir(layer_dir):
-            out_merge = os.path.join(KML_MERGED_FOLDER, f"{sub}_merge.kml")
-            merge_layer_folder_to_single_kml(layer_dir, out_merge)
-            print(f"  -> Merged {sub} -> {out_merge}")
+    print("6) Merging layer folders into single KMLs in Merge_KMLs (parallel) ...")
+    layer_merge_jobs = []
+    for root in [KML_LHS_FOLDER, KML_RHS_FOLDER]:
+        for sub in os.listdir(root):
+            layer_dir = os.path.join(root, sub)
+            if os.path.isdir(layer_dir):
+                out_merge = os.path.join(KML_MERGED_FOLDER, f"{sub}_merge.kml")
+                layer_merge_jobs.append((sub, layer_dir, out_merge))
 
-    for sub in os.listdir(KML_RHS_FOLDER):
-        layer_dir = os.path.join(KML_RHS_FOLDER, sub)
-        if os.path.isdir(layer_dir):
-            out_merge = os.path.join(KML_MERGED_FOLDER, f"{sub}_merge.kml")
-            merge_layer_folder_to_single_kml(layer_dir, out_merge)
-            print(f"  -> Merged {sub} -> {out_merge}")
+    if layer_merge_jobs:
+        with ThreadPoolExecutor(max_workers=min(4, len(layer_merge_jobs))) as ex:
+            futures = {
+                ex.submit(merge_layer_folder_to_single_kml, layer_dir, out_merge): (sub, out_merge)
+                for sub, layer_dir, out_merge in layer_merge_jobs
+            }
+            for fut in as_completed(futures):
+                sub, out_merge = futures[fut]
+                try:
+                    fut.result()
+                    print(f"  -> Merged {sub} -> {out_merge}")
+                except Exception as exc:
+                    print(f"  -> Merge failed for {sub}: {exc}")
 
     # 6.1) Side-level merged KMLs in Merge_KMLs (LHS_merge / RHS_merge)
     print("6.1) Merging side files into LHS_merge / RHS_merge ...")
@@ -1682,34 +1868,59 @@ def run_pipeline():
         print(f"  -> Side merged file: {p}")
 
     # 7) Per-side merge folders: all chainage KMLs from L1+L2+L3 in one directory
-    print("7) Populating LHS_kml_merge / RHS_kml_merge ...")
+    print("7) Populating LHS_kml_merge / RHS_kml_merge (parallel) ...")
+    side_merge_jobs = []
     if left_layers > 0:
-        p = merge_side_lane_folders_into_merge_kml(KML_LHS_FOLDER, "LHS")
-        if p:
-            print(f"  -> Side merge folder: {p}")
+        side_merge_jobs.append((KML_LHS_FOLDER, "LHS"))
     if right_layers > 0:
-        p = merge_side_lane_folders_into_merge_kml(KML_RHS_FOLDER, "RHS")
-        if p:
-            print(f"  -> Side merge folder: {p}")
+        side_merge_jobs.append((KML_RHS_FOLDER, "RHS"))
+    if side_merge_jobs:
+        with ThreadPoolExecutor(max_workers=min(2, len(side_merge_jobs))) as ex:
+            futures = {
+                ex.submit(merge_side_lane_folders_into_merge_kml, root, side): side
+                for root, side in side_merge_jobs
+            }
+            for fut in as_completed(futures):
+                side = futures[fut]
+                try:
+                    p = fut.result()
+                    if p:
+                        print(f"  -> {side} side merge folder: {p}")
+                except Exception as exc:
+                    print(f"  -> {side} side merge failed: {exc}")
 
     # 8) Generate lane-wise PNG images from lane KML folders (L1/L2/L3)
-    print("8) Generating lane-wise road images for LHS / RHS ...")
+    # Run sides in parallel so LHS and RHS image pipelines execute together.
+    print("8) Generating lane-wise road images for LHS / RHS (parallel sides) ...")
+    side_jobs = []
     if left_layers > 0:
-        out_dir, count, merge_out_dir, merge_count = generate_lane_kml_images(KML_LHS_FOLDER, "LHS")
-        rotated = _run_rotation_chain_for_side_images(out_dir, IMAGE_DIRECTION)
-        rotated_merge = _run_rotation_chain_for_folder(merge_out_dir, IMAGE_DIRECTION)
-        print(f"  -> LHS rotated images: {rotated} files using {IMAGE_DIRECTION}")
-        print(f"  -> LHS images: {count} files in {out_dir}")
-        print(f"  -> LHS merge rotated images: {rotated_merge} files using {IMAGE_DIRECTION}")
-        print(f"  -> LHS merge images: {merge_count} files in {merge_out_dir}")
+        side_jobs.append((KML_LHS_FOLDER, "LHS"))
     if right_layers > 0:
-        out_dir, count, merge_out_dir, merge_count = generate_lane_kml_images(KML_RHS_FOLDER, "RHS")
-        rotated = _run_rotation_chain_for_side_images(out_dir, IMAGE_DIRECTION)
-        rotated_merge = _run_rotation_chain_for_folder(merge_out_dir, IMAGE_DIRECTION)
-        print(f"  -> RHS rotated images: {rotated} files using {IMAGE_DIRECTION}")
-        print(f"  -> RHS images: {count} files in {out_dir}")
-        print(f"  -> RHS merge rotated images: {rotated_merge} files using {IMAGE_DIRECTION}")
-        print(f"  -> RHS merge images: {merge_count} files in {merge_out_dir}")
+        side_jobs.append((KML_RHS_FOLDER, "RHS"))
+
+    side_results = {}
+    if side_jobs:
+        side_workers = min(2, len(side_jobs))
+        with ThreadPoolExecutor(max_workers=side_workers) as ex:
+            futures = {
+                ex.submit(_generate_and_rotate_side_images, root, side, IMAGE_DIRECTION): side
+                for root, side in side_jobs
+            }
+            for fut in as_completed(futures):
+                side = futures[fut]
+                try:
+                    side_results[side] = fut.result()
+                except Exception as exc:
+                    print(f"  -> {side} image generation failed: {exc}")
+
+    for side in ["LHS", "RHS"]:
+        if side not in side_results:
+            continue
+        res = side_results[side]
+        print(f"  -> {side} rotated images: {res['rotated']} files using {IMAGE_DIRECTION}")
+        print(f"  -> {side} images: {res['count']} files in {res['out_dir']}")
+        print(f"  -> {side} merge rotated images: {res['rotated_merge']} files using {IMAGE_DIRECTION}")
+        print(f"  -> {side} merge images: {res['merge_count']} files in {res['merge_out_dir']}")
 
     print("ALL DONE")
     print(f"Output folder: {OUTPUT_FOLDER}")
