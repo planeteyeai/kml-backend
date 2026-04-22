@@ -186,6 +186,8 @@ const DISTRESS_SCAN_INTERVAL_MS = Math.max(500, parseInt(process.env.DISTRESS_SC
 const DISTRESS_REQUEST_TIMEOUT_MS = Math.max(5000, parseInt(process.env.DISTRESS_REQUEST_TIMEOUT_MS || '180000', 10) || 180000);
 const DISTRESS_BATCH_TIMEOUT_MS = Math.max(30000, parseInt(process.env.DISTRESS_BATCH_TIMEOUT_MS || '600000', 10) || 600000);
 const DISTRESS_IMAGEWISE_CHUNK_SIZE = Math.max(1, parseInt(process.env.DISTRESS_IMAGEWISE_CHUNK_SIZE || '8', 10) || 8);
+const DISTRESS_ASYNC_MODE = ['1', 'true', 'yes', 'on'].includes(String(process.env.DISTRESS_ASYNC_MODE || '1').toLowerCase());
+const DISTRESS_ASYNC_POLL_MS = Math.max(1000, parseInt(process.env.DISTRESS_ASYNC_POLL_MS || '2000', 10) || 2000);
 const distressRuns = new Map();
 
 // Ensure base directories exist
@@ -1035,11 +1037,51 @@ async function callDistressAnalyzerBatch(images, options = {}) {
             contentType: guessImageMime(img.fileName)
         });
     });
-    const response = await axios.post(`${analyzerBaseUrl}/process-rotated-images-batch/`, formData, {
+    const requestConfig = {
         headers: formData.getHeaders(),
         maxBodyLength: Infinity,
         maxContentLength: Infinity,
         timeout: timeoutMs,
+    };
+
+    if (DISTRESS_ASYNC_MODE) {
+        try {
+            const asyncStart = await axios.post(
+                `${analyzerBaseUrl}/process-rotated-images-batch-async/`,
+                formData,
+                requestConfig
+            );
+            const jobId = asyncStart && asyncStart.data && asyncStart.data.job_id;
+            if (jobId) {
+                const startedAt = Date.now();
+                while (Date.now() - startedAt < timeoutMs) {
+                    await new Promise((resolve) => setTimeout(resolve, DISTRESS_ASYNC_POLL_MS));
+                    const statusResp = await axios.get(
+                        `${analyzerBaseUrl}/process-rotated-images-batch-status/${encodeURIComponent(jobId)}`,
+                        { timeout: timeoutMs }
+                    );
+                    const status = statusResp && statusResp.data ? statusResp.data.status : null;
+                    if (status === 'completed') {
+                        const resultResp = await axios.get(
+                            `${analyzerBaseUrl}/process-rotated-images-batch-result/${encodeURIComponent(jobId)}`,
+                            { timeout: timeoutMs }
+                        );
+                        return resultResp && resultResp.data ? resultResp.data : { results_by_image: {} };
+                    }
+                    if (status === 'failed') {
+                        const detail = statusResp && statusResp.data ? statusResp.data.error : 'Async distress job failed';
+                        throw new Error(detail);
+                    }
+                }
+                throw new Error(`Async distress batch timed out after ${timeoutMs}ms`);
+            }
+        } catch (asyncErr) {
+            console.warn('[DISTRESS] async batch mode failed, falling back to direct endpoint:', asyncErr.message || asyncErr);
+        }
+    }
+
+    const response = await axios.post(`${analyzerBaseUrl}/process-rotated-images-batch/`, formData, {
+        ...requestConfig,
     });
     return response?.data || { results_by_image: {} };
 }
@@ -1619,6 +1661,24 @@ app.post('/api/distress-imagewise', authenticateToken, async (req, res) => {
 
         const imageSources = getDistressImageSources(username, subPath);
         if (!imageSources.length) {
+            const existingRun = getInternalRun(username);
+            if (existingRun) {
+                if (existingRun.status !== 'completed') {
+                    return res.status(409).json({
+                        success: false,
+                        message: 'Distress pipeline is still running. Please retry after completion.',
+                        run: runSnapshot(existingRun),
+                    });
+                }
+                const completedResults = existingRun.resultsByImage || {};
+                if (Object.keys(completedResults).length > 0) {
+                    const plainResults = {};
+                    Object.entries(completedResults).forEach(([imageName, record]) => {
+                        plainResults[imageName] = record && record.result ? record.result : record;
+                    });
+                    return res.status(200).json({ results_by_image: plainResults });
+                }
+            }
             return res.status(404).json({
                 success: false,
                 message: 'No generated images found for distress processing.',
