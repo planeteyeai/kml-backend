@@ -983,7 +983,6 @@ app.get('/api/merge-images/:username', requireMergeImagesAccess, (req, res) => {
                 publicUrl: links.publicUrl
             };
         });
-        }
 
         let hint;
         if (images.length === 0 && onlyMergeKml) {

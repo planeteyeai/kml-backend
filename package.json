@@ -4,8 +4,8 @@
   "description": "Backend for KML creation and pipeline",
   "main": "server.js",
   "scripts": {
-    "start": "node server.js",
-    "dev": "nodemon server.js"
+    "start": "node --max-http-header-size=65536 server.js",
+    "dev": "nodemon --exec \"node --max-http-header-size=65536\" server.js"
   },
   "dependencies": {
     "@tmcw/togeojson": "^7.1.2",
