@@ -1018,12 +1018,18 @@ function runSnapshot(run) {
     };
 }
 
-async function callDistressAnalyzerForImage(imagePath, fileName) {
-    const fileBuffer = fs.readFileSync(imagePath);
+async function callDistressAnalyzerBatch(images) {
+    const safeImages = Array.isArray(images) ? images : [];
+    if (safeImages.length === 0) {
+        return { results_by_image: {} };
+    }
     const formData = new FormData();
-    formData.append('files', fileBuffer, {
-        filename: fileName,
-        contentType: guessImageMime(fileName)
+    safeImages.forEach((img) => {
+        const fileBuffer = fs.readFileSync(img.absolutePath);
+        formData.append('files', fileBuffer, {
+            filename: img.fileName,
+            contentType: guessImageMime(img.fileName)
+        });
     });
     const response = await axios.post(`${DISTRESS_ANALYZER_URL}/process-rotated-images-batch/`, formData, {
         headers: formData.getHeaders(),
@@ -1031,21 +1037,7 @@ async function callDistressAnalyzerForImage(imagePath, fileName) {
         maxContentLength: Infinity,
         timeout: DISTRESS_REQUEST_TIMEOUT_MS,
     });
-    const imageResult = response?.data?.results_by_image?.[fileName];
-    if (typeof imageResult === 'undefined') {
-        throw new Error('Distress analyzer returned no result for image');
-    }
-    return imageResult;
-}
-
-function enqueueDistressImage(run, image) {
-    const existing = run.knownPaths.has(image.absolutePath);
-    if (existing) return;
-    run.knownPaths.add(image.absolutePath);
-    run.totalImages += 1;
-    run.queue.push(image);
-    run.queuedImages = run.queue.length;
-    if (run.status === 'starting') run.status = 'running';
+    return response?.data || { results_by_image: {} };
 }
 
 function tryFinalizeDistressRun(run) {
@@ -1060,67 +1052,56 @@ function tryFinalizeDistressRun(run) {
     }
 }
 
-async function processDistressQueue(run) {
-    while (run.activeWorkers < DISTRESS_IMAGE_WORKERS && run.queue.length > 0) {
-        const image = run.queue.shift();
-        run.queuedImages = run.queue.length;
-        run.activeWorkers += 1;
-        run.processingImages += 1;
-        (async () => {
-            try {
-                const result = await callDistressAnalyzerForImage(image.absolutePath, image.fileName);
-                run.resultsByImage[image.fileName] = {
-                    side: image.side,
-                    lane: image.lane,
-                    modifiedAt: image.modifiedAt,
-                    result,
-                };
-                run.processedImages += 1;
-            } catch (error) {
-                run.failedImages += 1;
-                run.errorsByImage[image.fileName] = error.message || 'Failed to process image';
-                console.error(`[DISTRESS] image failed ${image.fileName}:`, error.message || error);
-            } finally {
-                run.activeWorkers -= 1;
-                run.processingImages = Math.max(0, run.processingImages - 1);
-                run.queuedImages = run.queue.length;
-                void processDistressQueue(run);
-                tryFinalizeDistressRun(run);
-            }
-        })();
-    }
-}
-
-function scanAndQueueStableImages(run, username) {
-    if (!run || (run.status !== 'starting' && run.status !== 'running')) return;
-    const now = Date.now();
+async function processDistressBatchOnce(run, username) {
     const entries = getMergeImageEntries(username);
-    for (const image of entries) {
-        if (!image?.absolutePath || run.knownPaths.has(image.absolutePath)) continue;
-        let stats;
-        try {
-            stats = fs.statSync(image.absolutePath);
-        } catch (_) {
-            continue;
-        }
-        const previous = run.stableSnapshots.get(image.absolutePath);
-        const current = { size: stats.size, mtimeMs: stats.mtimeMs, seenAt: now };
-        run.stableSnapshots.set(image.absolutePath, current);
-        if (!previous) continue;
-        const isStable = previous.size === current.size && previous.mtimeMs === current.mtimeMs;
-        if (!isStable) continue;
-        enqueueDistressImage(run, image);
+    run.totalImages = entries.length;
+    run.queuedImages = 0;
+    run.processingImages = entries.length > 0 ? 1 : 0;
+    run.processedImages = 0;
+    run.failedImages = 0;
+    run.resultsByImage = {};
+    run.errorsByImage = {};
+    if (entries.length === 0) {
+        run.processingImages = 0;
+        return;
     }
-    void processDistressQueue(run);
+    try {
+        const batchResponse = await callDistressAnalyzerBatch(entries);
+        const resultsByImage = (batchResponse && batchResponse.results_by_image) || {};
+        entries.forEach((img) => {
+            const item = resultsByImage[img.fileName];
+            if (typeof item === 'undefined') {
+                run.failedImages += 1;
+                run.errorsByImage[img.fileName] = 'Missing result in batch response';
+                return;
+            }
+            if (item && typeof item === 'object' && item.error) {
+                run.failedImages += 1;
+                run.errorsByImage[img.fileName] = String(item.error);
+                return;
+            }
+            run.resultsByImage[img.fileName] = {
+                side: img.side,
+                lane: img.lane,
+                modifiedAt: img.modifiedAt,
+                result: item,
+            };
+            run.processedImages += 1;
+        });
+    } catch (error) {
+        run.failedImages = entries.length;
+        entries.forEach((img) => {
+            run.errorsByImage[img.fileName] = error.message || 'Failed to process batch';
+        });
+        console.error('[DISTRESS] batch processing failed:', error.message || error);
+    } finally {
+        run.processingImages = 0;
+    }
 }
 
 async function startPipelineAndDistressRun(username, metadata, content, userDirs, isKmlContent = false, existingRun = null) {
     const run = existingRun || createDistressRun(username);
-    run.status = 'starting';
-    run.scanTimer = setInterval(() => {
-        scanAndQueueStableImages(run, username);
-        tryFinalizeDistressRun(run);
-    }, DISTRESS_SCAN_INTERVAL_MS);
+    run.status = 'running';
     const kmlContent = isKmlContent ? content : geojsonToKml(content, 'Drawn_Data');
     try {
         await processWithPython(metadata, kmlContent, userDirs);
@@ -1129,8 +1110,7 @@ async function startPipelineAndDistressRun(username, metadata, content, userDirs
         console.error('[DISTRESS] pipeline error:', run.pipelineError);
     } finally {
         run.pipelineDone = true;
-        scanAndQueueStableImages(run, username);
-        void processDistressQueue(run);
+        await processDistressBatchOnce(run, username);
         tryFinalizeDistressRun(run);
     }
     return run;
