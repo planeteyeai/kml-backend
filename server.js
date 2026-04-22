@@ -184,6 +184,8 @@ const DISTRESS_ANALYZER_URL = (process.env.DISTRESS_ANALYZER_URL || 'https://dis
 const DISTRESS_IMAGE_WORKERS = Math.max(1, parseInt(process.env.DISTRESS_IMAGE_WORKERS || '4', 10) || 4);
 const DISTRESS_SCAN_INTERVAL_MS = Math.max(500, parseInt(process.env.DISTRESS_SCAN_INTERVAL_MS || '1500', 10) || 1500);
 const DISTRESS_REQUEST_TIMEOUT_MS = Math.max(5000, parseInt(process.env.DISTRESS_REQUEST_TIMEOUT_MS || '180000', 10) || 180000);
+const DISTRESS_BATCH_TIMEOUT_MS = Math.max(30000, parseInt(process.env.DISTRESS_BATCH_TIMEOUT_MS || '600000', 10) || 600000);
+const DISTRESS_IMAGEWISE_CHUNK_SIZE = Math.max(1, parseInt(process.env.DISTRESS_IMAGEWISE_CHUNK_SIZE || '8', 10) || 8);
 const distressRuns = new Map();
 
 // Ensure base directories exist
@@ -1018,11 +1020,13 @@ function runSnapshot(run) {
     };
 }
 
-async function callDistressAnalyzerBatch(images) {
+async function callDistressAnalyzerBatch(images, options = {}) {
     const safeImages = Array.isArray(images) ? images : [];
     if (safeImages.length === 0) {
         return { results_by_image: {} };
     }
+    const analyzerBaseUrl = String(options.baseUrl || DISTRESS_ANALYZER_URL).replace(/\/+$/, '');
+    const timeoutMs = Math.max(5000, Number(options.timeoutMs) || DISTRESS_REQUEST_TIMEOUT_MS);
     const formData = new FormData();
     safeImages.forEach((img) => {
         const fileBuffer = fs.readFileSync(img.absolutePath);
@@ -1031,13 +1035,35 @@ async function callDistressAnalyzerBatch(images) {
             contentType: guessImageMime(img.fileName)
         });
     });
-    const response = await axios.post(`${DISTRESS_ANALYZER_URL}/process-rotated-images-batch/`, formData, {
+    const response = await axios.post(`${analyzerBaseUrl}/process-rotated-images-batch/`, formData, {
         headers: formData.getHeaders(),
         maxBodyLength: Infinity,
         maxContentLength: Infinity,
-        timeout: DISTRESS_REQUEST_TIMEOUT_MS,
+        timeout: timeoutMs,
     });
     return response?.data || { results_by_image: {} };
+}
+
+function chunkArray(items, chunkSize) {
+    const out = [];
+    for (let i = 0; i < items.length; i += chunkSize) {
+        out.push(items.slice(i, i + chunkSize));
+    }
+    return out;
+}
+
+async function callDistressAnalyzerBatchChunked(images, options = {}) {
+    const safeImages = Array.isArray(images) ? images : [];
+    const chunkSize = Math.max(1, Number(options.chunkSize) || DISTRESS_IMAGEWISE_CHUNK_SIZE);
+    const chunks = chunkArray(safeImages, chunkSize);
+    const merged = { results_by_image: {} };
+
+    for (const chunk of chunks) {
+        const response = await callDistressAnalyzerBatch(chunk, options);
+        const partial = (response && response.results_by_image) || {};
+        Object.assign(merged.results_by_image, partial);
+    }
+    return merged;
 }
 
 function tryFinalizeDistressRun(run) {
@@ -1599,27 +1625,25 @@ app.post('/api/distress-imagewise', authenticateToken, async (req, res) => {
             });
         }
 
-        const formData = new FormData();
-        imageSources.forEach((img) => {
-            formData.append('files', fs.createReadStream(img.absolutePath), {
-                filename: img.displayName,
-                contentType: mimeTypeForFile(img.absolutePath),
-            });
-        });
-
-        const distressResponse = await axios.post(
-            `${distressBase}/process-rotated-images-batch/`,
-            formData,
-            {
-                headers: formData.getHeaders(),
-                maxContentLength: Infinity,
-                maxBodyLength: Infinity,
-                timeout: Number(process.env.DISTRESS_BATCH_TIMEOUT_MS || 600000),
-            }
+        const batchPayload = imageSources.map((img) => ({
+            absolutePath: img.absolutePath,
+            fileName: img.displayName,
+        }));
+        const chunkSize = Math.max(
+            1,
+            Number(process.env.DISTRESS_IMAGEWISE_CHUNK_SIZE || DISTRESS_IMAGEWISE_CHUNK_SIZE) || DISTRESS_IMAGEWISE_CHUNK_SIZE
+        );
+        const timeoutMs = Math.max(
+            30000,
+            Number(process.env.DISTRESS_BATCH_TIMEOUT_MS || DISTRESS_BATCH_TIMEOUT_MS) || DISTRESS_BATCH_TIMEOUT_MS
         );
 
-        // Return distress API response directly.
-        return res.status(distressResponse.status).json(distressResponse.data || { results_by_image: {} });
+        const data = await callDistressAnalyzerBatchChunked(batchPayload, {
+            chunkSize,
+            baseUrl: distressBase,
+            timeoutMs,
+        });
+        return res.status(200).json(data || { results_by_image: {} });
     } catch (error) {
         const messageText = String(error.message || '').toLowerCase();
         const status = error.response && error.response.status
