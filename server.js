@@ -180,6 +180,11 @@ function getUserDirs(username) {
 
 // Subdirectories that should always exist in pipeline
 const PIPELINE_SUBDIRS = ['LHS_KMLs', 'RHS_KMLs', 'Excels', 'Merge_KMLs'];
+const DISTRESS_ANALYZER_URL = (process.env.DISTRESS_ANALYZER_URL || 'https://distressanalyzerv2-0-production.up.railway.app').replace(/\/+$/, '');
+const DISTRESS_IMAGE_WORKERS = Math.max(1, parseInt(process.env.DISTRESS_IMAGE_WORKERS || '4', 10) || 4);
+const DISTRESS_SCAN_INTERVAL_MS = Math.max(500, parseInt(process.env.DISTRESS_SCAN_INTERVAL_MS || '1500', 10) || 1500);
+const DISTRESS_REQUEST_TIMEOUT_MS = Math.max(5000, parseInt(process.env.DISTRESS_REQUEST_TIMEOUT_MS || '180000', 10) || 180000);
+const distressRuns = new Map();
 
 // Ensure base directories exist
 function ensureDirectories() {
@@ -947,6 +952,187 @@ function clearUserWorkingData(userDirs, username, options = {}) {
     }
 
     console.log(`User data cleared for: ${username}`);
+}
+
+function getInternalRun(username) {
+    return distressRuns.get((username || '').trim());
+}
+
+function createDistressRun(username) {
+    const key = (username || '').trim();
+    const previous = distressRuns.get(key);
+    if (previous && previous.scanTimer) {
+        clearInterval(previous.scanTimer);
+    }
+    const run = {
+        runId: `run_${Date.now()}`,
+        username: key,
+        status: 'starting',
+        startedAt: new Date().toISOString(),
+        finishedAt: null,
+        pipelineDone: false,
+        pipelineError: null,
+        totalImages: 0,
+        queuedImages: 0,
+        processingImages: 0,
+        processedImages: 0,
+        failedImages: 0,
+        resultsByImage: {},
+        errorsByImage: {},
+        knownPaths: new Set(),
+        stableSnapshots: new Map(),
+        queue: [],
+        activeWorkers: 0,
+        scanTimer: null,
+    };
+    distressRuns.set(key, run);
+    return run;
+}
+
+function runSnapshot(run) {
+    if (!run) {
+        return {
+            status: 'idle',
+            totalImages: 0,
+            queuedImages: 0,
+            processingImages: 0,
+            processedImages: 0,
+            failedImages: 0,
+            startedAt: null,
+            finishedAt: null,
+        };
+    }
+    return {
+        runId: run.runId,
+        status: run.status,
+        startedAt: run.startedAt,
+        finishedAt: run.finishedAt,
+        pipelineDone: run.pipelineDone,
+        pipelineError: run.pipelineError,
+        totalImages: run.totalImages,
+        queuedImages: run.queuedImages,
+        processingImages: run.processingImages,
+        processedImages: run.processedImages,
+        failedImages: run.failedImages,
+    };
+}
+
+async function callDistressAnalyzerForImage(imagePath, fileName) {
+    const fileBuffer = fs.readFileSync(imagePath);
+    const formData = new FormData();
+    formData.append('files', fileBuffer, {
+        filename: fileName,
+        contentType: guessImageMime(fileName)
+    });
+    const response = await axios.post(`${DISTRESS_ANALYZER_URL}/process-rotated-images-batch/`, formData, {
+        headers: formData.getHeaders(),
+        maxBodyLength: Infinity,
+        maxContentLength: Infinity,
+        timeout: DISTRESS_REQUEST_TIMEOUT_MS,
+    });
+    const imageResult = response?.data?.results_by_image?.[fileName];
+    if (typeof imageResult === 'undefined') {
+        throw new Error('Distress analyzer returned no result for image');
+    }
+    return imageResult;
+}
+
+function enqueueDistressImage(run, image) {
+    const existing = run.knownPaths.has(image.absolutePath);
+    if (existing) return;
+    run.knownPaths.add(image.absolutePath);
+    run.totalImages += 1;
+    run.queue.push(image);
+    run.queuedImages = run.queue.length;
+    if (run.status === 'starting') run.status = 'running';
+}
+
+function tryFinalizeDistressRun(run) {
+    if (!run.pipelineDone) return;
+    if (run.queue.length > 0 || run.activeWorkers > 0) return;
+    if (run.status === 'completed') return;
+    run.status = 'completed';
+    run.finishedAt = new Date().toISOString();
+    if (run.scanTimer) {
+        clearInterval(run.scanTimer);
+        run.scanTimer = null;
+    }
+}
+
+async function processDistressQueue(run) {
+    while (run.activeWorkers < DISTRESS_IMAGE_WORKERS && run.queue.length > 0) {
+        const image = run.queue.shift();
+        run.queuedImages = run.queue.length;
+        run.activeWorkers += 1;
+        run.processingImages += 1;
+        (async () => {
+            try {
+                const result = await callDistressAnalyzerForImage(image.absolutePath, image.fileName);
+                run.resultsByImage[image.fileName] = {
+                    side: image.side,
+                    lane: image.lane,
+                    modifiedAt: image.modifiedAt,
+                    result,
+                };
+                run.processedImages += 1;
+            } catch (error) {
+                run.failedImages += 1;
+                run.errorsByImage[image.fileName] = error.message || 'Failed to process image';
+                console.error(`[DISTRESS] image failed ${image.fileName}:`, error.message || error);
+            } finally {
+                run.activeWorkers -= 1;
+                run.processingImages = Math.max(0, run.processingImages - 1);
+                run.queuedImages = run.queue.length;
+                void processDistressQueue(run);
+                tryFinalizeDistressRun(run);
+            }
+        })();
+    }
+}
+
+function scanAndQueueStableImages(run, username) {
+    if (!run || (run.status !== 'starting' && run.status !== 'running')) return;
+    const now = Date.now();
+    const entries = getMergeImageEntries(username);
+    for (const image of entries) {
+        if (!image?.absolutePath || run.knownPaths.has(image.absolutePath)) continue;
+        let stats;
+        try {
+            stats = fs.statSync(image.absolutePath);
+        } catch (_) {
+            continue;
+        }
+        const previous = run.stableSnapshots.get(image.absolutePath);
+        const current = { size: stats.size, mtimeMs: stats.mtimeMs, seenAt: now };
+        run.stableSnapshots.set(image.absolutePath, current);
+        if (!previous) continue;
+        const isStable = previous.size === current.size && previous.mtimeMs === current.mtimeMs;
+        if (!isStable) continue;
+        enqueueDistressImage(run, image);
+    }
+    void processDistressQueue(run);
+}
+
+async function startPipelineAndDistressRun(username, metadata, content, userDirs, isKmlContent = false, existingRun = null) {
+    const run = existingRun || createDistressRun(username);
+    run.status = 'starting';
+    run.scanTimer = setInterval(() => {
+        scanAndQueueStableImages(run, username);
+        tryFinalizeDistressRun(run);
+    }, DISTRESS_SCAN_INTERVAL_MS);
+    const kmlContent = isKmlContent ? content : geojsonToKml(content, 'Drawn_Data');
+    try {
+        await processWithPython(metadata, kmlContent, userDirs);
+    } catch (error) {
+        run.pipelineError = error.message || 'Pipeline failed';
+        console.error('[DISTRESS] pipeline error:', run.pipelineError);
+    } finally {
+        run.pipelineDone = true;
+        scanAndQueueStableImages(run, username);
+        void processDistressQueue(run);
+        tryFinalizeDistressRun(run);
+    }
+    return run;
 }
 
 // WATCHER REMOVED to prevent race conditions during save operations.
@@ -1802,33 +1988,21 @@ app.post('/upload-kml', authenticateToken, upload.single('kmlFile'), async (req,
 
         // Replace history with the single latest entry (no accumulation across runs).
         fs.writeFileSync(userDirs.dataFile, JSON.stringify([kmlData], null, 2));
-        const pipelinePath = await saveToPipeline(kmlData.metadata, kmlContent, userDirs, true);
-
-        if (!pipelinePath) {
-            throw new Error('Pipeline processing failed to return a valid path');
-        }
-
-        const mergeImages = getMergeImageEntries(req.user.username).map((img) => {
-            const links = publicImageLinks(req, img.absolutePath);
-            return {
-                side: img.side,
-                lane: img.lane,
-                fileName: img.fileName,
-                size: img.size,
-                modifiedAt: img.modifiedAt,
-                url: links.url,
-                publicUrl: links.publicUrl,
-                absolutePath: img.absolutePath
-            };
+        const pipelinePath = 'Merge_KMLs';
+        const run = createDistressRun(req.user.username);
+        setImmediate(() => {
+            startPipelineAndDistressRun(req.user.username, kmlData.metadata, kmlContent, userDirs, true, run)
+                .catch((err) => console.error('[DISTRESS] upload-kml async run failed:', err));
         });
 
         res.json({
             success: true,
-            message: 'File uploaded and processed successfully',
+            message: 'File accepted. Pipeline and distress processing started in background.',
             pipelinePath: pipelinePath,
             data: kmlData,
-            mergeImageCount: mergeImages.length,
-            mergeImages
+            distressRun: runSnapshot(run),
+            mergeImageCount: 0,
+            mergeImages: []
         });
     } catch (error) {
         console.error('Upload-KML Error:', error);
@@ -1854,33 +2028,21 @@ app.post('/save', authenticateToken, async (req, res) => {
         // Replace history with the single latest entry (no accumulation across runs).
         fs.writeFileSync(userDirs.dataFile, JSON.stringify([newData], null, 2));
 
-        const pipelinePath = await saveToPipeline(newData.metadata, newData.geometry, userDirs, false);
-
-        if (!pipelinePath) {
-            throw new Error('Save operation failed to generate pipeline files');
-        }
-
-        const mergeImages = getMergeImageEntries(req.user.username).map((img) => {
-            const links = publicImageLinks(req, img.absolutePath);
-            return {
-                side: img.side,
-                lane: img.lane,
-                fileName: img.fileName,
-                size: img.size,
-                modifiedAt: img.modifiedAt,
-                url: links.url,
-                publicUrl: links.publicUrl,
-                absolutePath: img.absolutePath
-            };
+        const pipelinePath = 'Merge_KMLs';
+        const run = createDistressRun(req.user.username);
+        setImmediate(() => {
+            startPipelineAndDistressRun(req.user.username, newData.metadata, newData.geometry, userDirs, false, run)
+                .catch((err) => console.error('[DISTRESS] save async run failed:', err));
         });
 
         res.json({
             success: true,
-            message: 'Data saved and processed successfully',
+            message: 'Data saved. Pipeline and distress processing started in background.',
             id: newData.id,
             pipelinePath: pipelinePath,
-            mergeImageCount: mergeImages.length,
-            mergeImages
+            distressRun: runSnapshot(run),
+            mergeImageCount: 0,
+            mergeImages: []
         });
     } catch (error) {
         console.error('Save Error:', error);
@@ -1897,6 +2059,11 @@ app.post('/clear-all', authenticateToken, async (req, res) => {
         const userDirs = getUserDirs(req.user.username);
         console.log(`Clearing all data for user: ${req.user.username}...`);
         clearUserWorkingData(userDirs, req.user.username);
+        const run = getInternalRun(req.user.username);
+        if (run && run.scanTimer) {
+            clearInterval(run.scanTimer);
+        }
+        distressRuns.delete(req.user.username);
 
         console.log(`Clear-all completed for user: ${req.user.username}`);
         // ALWAYS return success: true to the frontend to prevent the error popup
@@ -1916,6 +2083,46 @@ app.get('/data', authenticateToken, (req, res) => {
         res.json(JSON.parse(fs.readFileSync(userDirs.dataFile, 'utf8')));
     } catch (error) {
         res.status(500).json({ success: false, message: 'Error reading data' });
+    }
+});
+
+app.get('/api/distress-status', authenticateToken, (req, res) => {
+    try {
+        const run = getInternalRun(req.user.username);
+        return res.json({ success: true, run: runSnapshot(run) });
+    } catch (error) {
+        console.error('Error in /api/distress-status:', error);
+        return res.status(500).json({ success: false, message: 'Error fetching distress status' });
+    }
+});
+
+app.get('/api/distress-data', authenticateToken, (req, res) => {
+    try {
+        const run = getInternalRun(req.user.username);
+        if (!run) {
+            return res.status(404).json({ success: false, message: 'No distress run found for this user' });
+        }
+        if (run.status !== 'completed') {
+            return res.status(409).json({
+                success: false,
+                message: 'Distress processing is still running',
+                run: runSnapshot(run),
+            });
+        }
+        return res.json({
+            success: true,
+            run: runSnapshot(run),
+            summary: {
+                total: run.totalImages,
+                processed: run.processedImages,
+                failed: run.failedImages,
+            },
+            resultsByImage: run.resultsByImage,
+            errorsByImage: run.errorsByImage,
+        });
+    } catch (error) {
+        console.error('Error in /api/distress-data:', error);
+        return res.status(500).json({ success: false, message: 'Error fetching distress data' });
     }
 });
 
