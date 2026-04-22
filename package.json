@@ -19,6 +19,7 @@
     "jsonwebtoken": "^9.0.2",
     "multer": "^1.4.5-lts.1",
     "sqlite3": "^5.1.7",
+    "xlsx": "^0.18.5",
     "xmldom": "^0.6.0"
   }
 }

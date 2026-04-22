@@ -8,6 +8,7 @@ const multer = require('multer');
 const FormData = require('form-data');
 const axios = require('axios');
 const archiver = require('archiver');
+const XLSX = require('xlsx');
 const { kml } = require('@tmcw/togeojson');
 const { DOMParser } = require('xmldom');
 const bcrypt = require('bcryptjs');
@@ -863,6 +864,141 @@ function getDistressImageSources(username, pipelineSubPath = '') {
     }));
 }
 
+function inferSideFromImageName(name = '') {
+    const upper = String(name || '').toUpperCase();
+    if (/(^|[^A-Z0-9])LHS([^A-Z0-9]|$)/.test(upper)) return 'LHS';
+    if (/(^|[^A-Z0-9])RHS([^A-Z0-9]|$)/.test(upper)) return 'RHS';
+    return null;
+}
+
+function normalizeGeoHeader(header) {
+    return String(header || '').trim().toLowerCase().replace(/[^a-z0-9]+/g, '');
+}
+
+function toFiniteNumber(value) {
+    const n = Number(value);
+    return Number.isFinite(n) ? n : null;
+}
+
+function readSideGeoRows(userDirs, side) {
+    const sideUpper = String(side || '').toUpperCase();
+    if (!['LHS', 'RHS'].includes(sideUpper)) return [];
+    const excelPath = path.join(userDirs.pipelineDir, 'Excels', `${sideUpper}_L1.xlsx`);
+    if (!fs.existsSync(excelPath)) return [];
+
+    const wb = XLSX.readFile(excelPath, { cellDates: false });
+    const wsName = wb.SheetNames[0];
+    if (!wsName) return [];
+    const ws = wb.Sheets[wsName];
+    const rows = XLSX.utils.sheet_to_json(ws, { defval: null, raw: true });
+    if (!Array.isArray(rows) || rows.length === 0) return [];
+
+    const headerMap = new Map();
+    Object.keys(rows[0] || {}).forEach((key) => {
+        const norm = normalizeGeoHeader(key);
+        if (norm && !headerMap.has(norm)) headerMap.set(norm, key);
+    });
+    const colStart = headerMap.get('chainagestart');
+    const colEnd = headerMap.get('chainageend');
+    const colLat = headerMap.get('latitude') || headerMap.get('lat');
+    const colLon = headerMap.get('longitude') || headerMap.get('lon') || headerMap.get('long');
+    if (!colStart || !colEnd || !colLat || !colLon) return [];
+
+    const parsed = rows
+        .map((r) => ({
+            chainageStart: toFiniteNumber(r[colStart]),
+            chainageEnd: toFiniteNumber(r[colEnd]),
+            latitude: toFiniteNumber(r[colLat]),
+            longitude: toFiniteNumber(r[colLon]),
+        }))
+        .filter((r) =>
+            r.chainageStart !== null &&
+            r.chainageEnd !== null &&
+            r.latitude !== null &&
+            r.longitude !== null
+        )
+        .sort((a, b) => a.chainageStart - b.chainageStart);
+    return parsed;
+}
+
+function getLatLonForChainage(rows, chainageMeters) {
+    if (!Array.isArray(rows) || rows.length === 0) {
+        return { latitude: null, longitude: null, matchedChainageStartKm: null };
+    }
+    const chainageKm = Number(chainageMeters) / 1000;
+    if (!Number.isFinite(chainageKm)) {
+        return { latitude: null, longitude: null, matchedChainageStartKm: null };
+    }
+
+    const exact = rows.find((r) => r.chainageStart <= chainageKm && chainageKm < r.chainageEnd);
+    if (exact) {
+        return {
+            latitude: exact.latitude,
+            longitude: exact.longitude,
+            matchedChainageStartKm: exact.chainageStart,
+        };
+    }
+
+    let nearest = null;
+    let bestDiff = Infinity;
+    for (const r of rows) {
+        const diff = Math.abs(r.chainageStart - chainageKm);
+        if (diff < bestDiff) {
+            bestDiff = diff;
+            nearest = r;
+        }
+    }
+    if (!nearest) {
+        return { latitude: null, longitude: null, matchedChainageStartKm: null };
+    }
+    return {
+        latitude: nearest.latitude,
+        longitude: nearest.longitude,
+        matchedChainageStartKm: nearest.chainageStart,
+    };
+}
+
+function enrichDistressGeoInResults(resultsByImage, userDirs) {
+    if (!resultsByImage || typeof resultsByImage !== 'object') return;
+    const geoBySide = {
+        LHS: readSideGeoRows(userDirs, 'LHS'),
+        RHS: readSideGeoRows(userDirs, 'RHS'),
+    };
+
+    Object.entries(resultsByImage).forEach(([imageName, payload]) => {
+        if (!payload || !Array.isArray(payload.defects)) return;
+        const sideFromName = inferSideFromImageName(imageName);
+        payload.defects.forEach((defect) => {
+            const side = String(defect.side || sideFromName || '').toUpperCase();
+            const rows = geoBySide[side];
+            if (!rows || rows.length === 0) {
+                defect.latitude = null;
+                defect.longitude = null;
+                defect.matched_chainage_start_km = null;
+                return;
+            }
+
+            const start = toFiniteNumber(defect.start);
+            const end = toFiniteNumber(defect.end);
+            const middleMeters = (start !== null && end !== null)
+                ? ((start + end) / 2)
+                : (start !== null ? start : null);
+            if (middleMeters === null) {
+                defect.latitude = null;
+                defect.longitude = null;
+                defect.matched_chainage_start_km = null;
+                return;
+            }
+
+            const hit = getLatLonForChainage(rows, middleMeters);
+            defect.latitude = hit.latitude !== null ? Number(hit.latitude.toFixed(8)) : null;
+            defect.longitude = hit.longitude !== null ? Number(hit.longitude.toFixed(8)) : null;
+            defect.matched_chainage_start_km =
+                hit.matchedChainageStartKm !== null ? Number(hit.matchedChainageStartKm.toFixed(3)) : null;
+        });
+    });
+}
+
 /** True only for flat strip PNGs in *_kml_merge_images (excludes LHS_images/L1 etc.). */
 function isMergeKmlStripPath(absolutePath) {
     return /[/\\](LHS|RHS)_kml_merge_images[/\\]/i.test(absolutePath || '');
@@ -1451,8 +1587,11 @@ app.post('/api/distress-imagewise', authenticateToken, async (req, res) => {
             }
         );
 
-        // Return distress API response directly.
-        return res.status(distressResponse.status).json(distressResponse.data || { results_by_image: {} });
+        const responseBody = distressResponse.data || { results_by_image: {} };
+        // Distress service may run in a different container and miss per-user Excels.
+        // Enrich geo locally from this user's pipeline Excels before returning.
+        enrichDistressGeoInResults(responseBody.results_by_image, getUserDirs(username));
+        return res.status(distressResponse.status).json(responseBody);
     } catch (error) {
         const messageText = String(error.message || '').toLowerCase();
         const status = error.response && error.response.status
