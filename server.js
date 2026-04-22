@@ -841,10 +841,11 @@ function getDistressImageSources(username, pipelineSubPath = '') {
 
     // Default: use merge-strip images generated from KML pipeline.
     if (!trimmedPath) {
-        const mergeEntries = getMergeImageEntries(username).filter((img) =>
-            isMergeKmlStripPath(img.absolutePath)
-        );
-        return mergeEntries.map((img) => ({
+        const allEntries = getMergeImageEntries(username);
+        const mergeEntries = allEntries.filter((img) => isMergeKmlStripPath(img.absolutePath));
+        // Fallback: if merge strips are not available yet, use per-lane images.
+        const preferredEntries = mergeEntries.length ? mergeEntries : allEntries;
+        return preferredEntries.map((img) => ({
             absolutePath: img.absolutePath,
             displayName: img.fileName,
         }));
@@ -2106,6 +2107,13 @@ app.get('/api/distress-data', authenticateToken, (req, res) => {
             return res.status(409).json({
                 success: false,
                 message: 'Distress processing is still running',
+                run: runSnapshot(run),
+            });
+        }
+        if (run.pipelineError && run.totalImages === 0) {
+            return res.status(500).json({
+                success: false,
+                message: 'Pipeline completed with error and produced no images',
                 run: runSnapshot(run),
             });
         }
