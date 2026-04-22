@@ -1,0 +1,62 @@
+COMMAND: python C:\Users\Sahil.Sonawane\OneDrive - Planet Eye Farm AI Ltd\Desktop\distress\kml-backend\kml_creation\KML_creation.py C:\Users\Sahil.Sonawane\OneDrive - Planet Eye Farm AI Ltd\Desktop\distress\kml-backend\data\users\local-user\kml_creation\input.kml C:\Users\Sahil.Sonawane\OneDrive - Planet Eye Farm AI Ltd\Desktop\distress\kml-backend\data\users\local-user\pipeline 0 5 2 0.1 3.4 2.75
+
+STDOUT:
+0) Initializing output folders in C:\Users\Sahil.Sonawane\OneDrive - Planet Eye Farm AI Ltd\Desktop\distress\kml-backend\data\users\local-user\pipeline...
+Failed to delete C:\Users\Sahil.Sonawane\OneDrive - Planet Eye Farm AI Ltd\Desktop\distress\kml-backend\data\users\local-user\pipeline\LHS_KMLs\LHS_images. Reason: [WinError 5] Access is denied: 'C:\\Users\\Sahil.Sonawane\\OneDrive - Planet Eye Farm AI Ltd\\Desktop\\distress\\kml-backend\\data\\users\\local-user\\pipeline\\LHS_KMLs\\LHS_images\\LHS_L1'
+Failed to delete C:\Users\Sahil.Sonawane\OneDrive - Planet Eye Farm AI Ltd\Desktop\distress\kml-backend\data\users\local-user\pipeline\LHS_KMLs\LHS_kml_merge. Reason: [WinError 5] Access is denied: 'C:\\Users\\Sahil.Sonawane\\OneDrive - Planet Eye Farm AI Ltd\\Desktop\\distress\\kml-backend\\data\\users\\local-user\\pipeline\\LHS_KMLs\\LHS_kml_merge'
+Failed to delete C:\Users\Sahil.Sonawane\OneDrive - Planet Eye Farm AI Ltd\Desktop\distress\kml-backend\data\users\local-user\pipeline\LHS_KMLs\LHS_kml_merge_images. Reason: [WinError 5] Access is denied: 'C:\\Users\\Sahil.Sonawane\\OneDrive - Planet Eye Farm AI Ltd\\Desktop\\distress\\kml-backend\\data\\users\\local-user\\pipeline\\LHS_KMLs\\LHS_kml_merge_images'
+Failed to delete C:\Users\Sahil.Sonawane\OneDrive - Planet Eye Farm AI Ltd\Desktop\distress\kml-backend\data\users\local-user\pipeline\LHS_KMLs\LHS_L1. Reason: [WinError 5] Access is denied: 'C:\\Users\\Sahil.Sonawane\\OneDrive - Planet Eye Farm AI Ltd\\Desktop\\distress\\kml-backend\\data\\users\\local-user\\pipeline\\LHS_KMLs\\LHS_L1'
+Failed to delete C:\Users\Sahil.Sonawane\OneDrive - Planet Eye Farm AI Ltd\Desktop\distress\kml-backend\data\users\local-user\pipeline\RHS_KMLs\RHS_images. Reason: [WinError 5] Access is denied: 'C:\\Users\\Sahil.Sonawane\\OneDrive - Planet Eye Farm AI Ltd\\Desktop\\distress\\kml-backend\\data\\users\\local-user\\pipeline\\RHS_KMLs\\RHS_images\\RHS_L1'
+Failed to delete C:\Users\Sahil.Sonawane\OneDrive - Planet Eye Farm AI Ltd\Desktop\distress\kml-backend\data\users\local-user\pipeline\RHS_KMLs\RHS_kml_merge. Reason: [WinError 5] Access is denied: 'C:\\Users\\Sahil.Sonawane\\OneDrive - Planet Eye Farm AI Ltd\\Desktop\\distress\\kml-backend\\data\\users\\local-user\\pipeline\\RHS_KMLs\\RHS_kml_merge'
+Failed to delete C:\Users\Sahil.Sonawane\OneDrive - Planet Eye Farm AI Ltd\Desktop\distress\kml-backend\data\users\local-user\pipeline\RHS_KMLs\RHS_kml_merge_images. Reason: [WinError 5] Access is denied: 'C:\\Users\\Sahil.Sonawane\\OneDrive - Planet Eye Farm AI Ltd\\Desktop\\distress\\kml-backend\\data\\users\\local-user\\pipeline\\RHS_KMLs\\RHS_kml_merge_images'
+Failed to delete C:\Users\Sahil.Sonawane\OneDrive - Planet Eye Farm AI Ltd\Desktop\distress\kml-backend\data\users\local-user\pipeline\RHS_KMLs\RHS_L1. Reason: [WinError 5] Access is denied: 'C:\\Users\\Sahil.Sonawane\\OneDrive - Planet Eye Farm AI Ltd\\Desktop\\distress\\kml-backend\\data\\users\\local-user\\pipeline\\RHS_KMLs\\RHS_L1'
+1) Reading input KML & interpolating...
+2) Saving chainage Excel...
+  [OK] Saved: C:\Users\Sahil.Sonawane\OneDrive - Planet Eye Farm AI Ltd\Desktop\distress\kml-backend\data\users\local-user\pipeline\Excels\chainage_points.xlsx
+-> Creating 5m chainage Line + Point KML...
+-> Chainage Line + Point KML saved: C:\Users\Sahil.Sonawane\OneDrive - Planet Eye Farm AI Ltd\Desktop\distress\kml-backend\data\users\local-user\pipeline\Merge_KMLs\line_polygons_chainage.kml
+2) Computing Median_LHS & Median_RHS (offset = 2.75 m)...
+  [OK] Saved: C:\Users\Sahil.Sonawane\OneDrive - Planet Eye Farm AI Ltd\Desktop\distress\kml-backend\data\users\local-user\pipeline\Excels\median_lhs_offset.xlsx
+  [OK] Saved: C:\Users\Sahil.Sonawane\OneDrive - Planet Eye Farm AI Ltd\Desktop\distress\kml-backend\data\users\local-user\pipeline\Excels\median_rhs_offset.xlsx
+3) Generating lane layers for LANE_COUNT = 2 ...
+-> Left layers created: {'LHS_L1': 'C:\\Users\\Sahil.Sonawane\\OneDrive - Planet Eye Farm AI Ltd\\Desktop\\distress\\kml-backend\\data\\users\\local-user\\pipeline\\Excels\\LHS_L1.xlsx'}
+-> Right layers created: {'RHS_L1': 'C:\\Users\\Sahil.Sonawane\\OneDrive - Planet Eye Farm AI Ltd\\Desktop\\distress\\kml-backend\\data\\users\\local-user\\pipeline\\Excels\\RHS_L1.xlsx'}
+4) Preparing layer pairings for KML generation...
+  [OK] LHS_L1 pair (median -> LHS_L1) added
+  [OK] RHS_L1 pair (median -> RHS_L1) added
+5) Generating per-layer binned KMLs ...
+  -> Generated 3 bin-KMLs for LHS_L1 in C:\Users\Sahil.Sonawane\OneDrive - Planet Eye Farm AI Ltd\Desktop\distress\kml-backend\data\users\local-user\pipeline\LHS_KMLs\LHS_L1
+  -> Generated 3 bin-KMLs for RHS_L1 in C:\Users\Sahil.Sonawane\OneDrive - Planet Eye Farm AI Ltd\Desktop\distress\kml-backend\data\users\local-user\pipeline\RHS_KMLs\RHS_L1
+6) Merging layer folders into single KMLs in Merge_KMLs ...
+  -> Merged LHS_images -> C:\Users\Sahil.Sonawane\OneDrive - Planet Eye Farm AI Ltd\Desktop\distress\kml-backend\data\users\local-user\pipeline\Merge_KMLs\LHS_images_merge.kml
+  -> Merged LHS_kml_merge -> C:\Users\Sahil.Sonawane\OneDrive - Planet Eye Farm AI Ltd\Desktop\distress\kml-backend\data\users\local-user\pipeline\Merge_KMLs\LHS_kml_merge_merge.kml
+  -> Merged LHS_kml_merge_images -> C:\Users\Sahil.Sonawane\OneDrive - Planet Eye Farm AI Ltd\Desktop\distress\kml-backend\data\users\local-user\pipeline\Merge_KMLs\LHS_kml_merge_images_merge.kml
+  -> Merged LHS_L1 -> C:\Users\Sahil.Sonawane\OneDrive - Planet Eye Farm AI Ltd\Desktop\distress\kml-backend\data\users\local-user\pipeline\Merge_KMLs\LHS_L1_merge.kml
+  -> Merged RHS_images -> C:\Users\Sahil.Sonawane\OneDrive - Planet Eye Farm AI Ltd\Desktop\distress\kml-backend\data\users\local-user\pipeline\Merge_KMLs\RHS_images_merge.kml
+  -> Merged RHS_kml_merge -> C:\Users\Sahil.Sonawane\OneDrive - Planet Eye Farm AI Ltd\Desktop\distress\kml-backend\data\users\local-user\pipeline\Merge_KMLs\RHS_kml_merge_merge.kml
+  -> Merged RHS_kml_merge_images -> C:\Users\Sahil.Sonawane\OneDrive - Planet Eye Farm AI Ltd\Desktop\distress\kml-backend\data\users\local-user\pipeline\Merge_KMLs\RHS_kml_merge_images_merge.kml
+  -> Merged RHS_L1 -> C:\Users\Sahil.Sonawane\OneDrive - Planet Eye Farm AI Ltd\Desktop\distress\kml-backend\data\users\local-user\pipeline\Merge_KMLs\RHS_L1_merge.kml
+6.1) Merging side files into LHS_merge / RHS_merge ...
+  -> Side merged file: C:\Users\Sahil.Sonawane\OneDrive - Planet Eye Farm AI Ltd\Desktop\distress\kml-backend\data\users\local-user\pipeline\Merge_KMLs\LHS_merge.kml
+  -> Side merged file: C:\Users\Sahil.Sonawane\OneDrive - Planet Eye Farm AI Ltd\Desktop\distress\kml-backend\data\users\local-user\pipeline\Merge_KMLs\RHS_merge.kml
+7) Populating LHS_kml_merge / RHS_kml_merge ...
+  -> Side merge folder: C:\Users\Sahil.Sonawane\OneDrive - Planet Eye Farm AI Ltd\Desktop\distress\kml-backend\data\users\local-user\pipeline\LHS_KMLs\LHS_kml_merge
+  -> Side merge folder: C:\Users\Sahil.Sonawane\OneDrive - Planet Eye Farm AI Ltd\Desktop\distress\kml-backend\data\users\local-user\pipeline\RHS_KMLs\RHS_kml_merge
+8) Generating lane-wise road images for LHS / RHS ...
+Failed to delete C:\Users\Sahil.Sonawane\OneDrive - Planet Eye Farm AI Ltd\Desktop\distress\kml-backend\data\users\local-user\pipeline\LHS_KMLs\LHS_images\LHS_L1. Reason: [WinError 5] Access is denied: 'C:\\Users\\Sahil.Sonawane\\OneDrive - Planet Eye Farm AI Ltd\\Desktop\\distress\\kml-backend\\data\\users\\local-user\\pipeline\\LHS_KMLs\\LHS_images\\LHS_L1'
+[IMG] Using consistent acquisition date for LHS: 2026-02-12
+  -> LHS rotated images: 3 files using down_to_up
+  -> LHS images: 3 files in C:\Users\Sahil.Sonawane\OneDrive - Planet Eye Farm AI Ltd\Desktop\distress\kml-backend\data\users\local-user\pipeline\LHS_KMLs\LHS_images
+  -> LHS merge rotated images: 3 files using down_to_up
+  -> LHS merge images: 3 files in C:\Users\Sahil.Sonawane\OneDrive - Planet Eye Farm AI Ltd\Desktop\distress\kml-backend\data\users\local-user\pipeline\LHS_KMLs\LHS_kml_merge_images
+Failed to delete C:\Users\Sahil.Sonawane\OneDrive - Planet Eye Farm AI Ltd\Desktop\distress\kml-backend\data\users\local-user\pipeline\RHS_KMLs\RHS_images\RHS_L1. Reason: [WinError 5] Access is denied: 'C:\\Users\\Sahil.Sonawane\\OneDrive - Planet Eye Farm AI Ltd\\Desktop\\distress\\kml-backend\\data\\users\\local-user\\pipeline\\RHS_KMLs\\RHS_images\\RHS_L1'
+[IMG] Using consistent acquisition date for RHS: 2026-02-12
+  -> RHS rotated images: 3 files using down_to_up
+  -> RHS images: 3 files in C:\Users\Sahil.Sonawane\OneDrive - Planet Eye Farm AI Ltd\Desktop\distress\kml-backend\data\users\local-user\pipeline\RHS_KMLs\RHS_images
+  -> RHS merge rotated images: 3 files using down_to_up
+  -> RHS merge images: 3 files in C:\Users\Sahil.Sonawane\OneDrive - Planet Eye Farm AI Ltd\Desktop\distress\kml-backend\data\users\local-user\pipeline\RHS_KMLs\RHS_kml_merge_images
+ALL DONE
+Output folder: C:\Users\Sahil.Sonawane\OneDrive - Planet Eye Farm AI Ltd\Desktop\distress\kml-backend\data\users\local-user\pipeline
+
+
+STDERR:
