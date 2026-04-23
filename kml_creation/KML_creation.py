@@ -1162,7 +1162,9 @@ def generate_lane_kml_images(side_root, side_tag):
                 os.path.join(merge_out_root, f"{base}.png"),
                 "merge",
             ))
-    jobs = lane_jobs + merge_jobs
+    # Priority: generate merged-strip images first so distress can run as soon as
+    # LHS/RHS merge images are ready, while lane images continue in parallel flow.
+    jobs = merge_jobs + lane_jobs
 
     def _run_one(job):
         src, dst_png, kind = job
@@ -1358,7 +1360,19 @@ def read_linestring_from_kml(kml_path):
         if not all_coords:
             raise ValueError("All <coordinates> tags are empty.")
 
-        return all_coords
+        # Drop invalid / duplicate consecutive points so downstream interpolation
+        # never receives degenerate coordinate sequences from large KMLs.
+        cleaned = []
+        for lon, lat in all_coords:
+            if not (math.isfinite(lon) and math.isfinite(lat)):
+                continue
+            if cleaned and abs(cleaned[-1][0] - lon) < 1e-12 and abs(cleaned[-1][1] - lat) < 1e-12:
+                continue
+            cleaned.append((lon, lat))
+        if len(cleaned) < 2:
+            raise ValueError("Input KML must contain at least two valid coordinates.")
+
+        return cleaned
     except Exception as e:
         print(f"Error parsing KML {kml_path}: {e}")
         raise
@@ -1371,6 +1385,8 @@ def interpolate_geodesic_points(line_coords, interval_meters):
     """
     if len(line_coords) < 2:
         return []
+    if interval_meters <= 0:
+        raise ValueError("INTERVAL_METERS must be > 0")
     # cumulative distances (meters) along the polyline
     cum = [0.0]
     for i in range(1, len(line_coords)):
@@ -1385,16 +1401,20 @@ def interpolate_geodesic_points(line_coords, interval_meters):
     cur = 0.0
     # include last point with small epsilon
     while cur <= total_len + 1e-6:
+        # Clamp slight floating drift so we never step beyond last segment.
+        cur_eval = min(cur, total_len)
         # find segment index
         i = 0
-        while i < len(cum) - 1 and cum[i + 1] < cur - 1e-9:
+        while i < len(cum) - 1 and cum[i + 1] < cur_eval - 1e-9:
             i += 1
+        if i >= len(line_coords) - 1:
+            i = len(line_coords) - 2
         seg_start = cum[i]
         seg_end = cum[i + 1] if i + 1 < len(cum) else seg_start
         if seg_end == seg_start:
             frac = 0.0
         else:
-            frac = (cur - seg_start) / (seg_end - seg_start)
+            frac = (cur_eval - seg_start) / (seg_end - seg_start)
         lon1, lat1 = line_coords[i]
         lon2, lat2 = line_coords[i + 1]
         ilon = lon1 + frac * (lon2 - lon1)
