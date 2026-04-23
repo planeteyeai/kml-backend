@@ -49,7 +49,7 @@ else:
     INPUT_KML = "C:\\Users\\Rudra.Joshi\\Desktop\\kml_web\\kml_creation\\input.kml"
     OUTPUT_FOLDER = "C:\\Users\\Rudra.Joshi\\Desktop\\kml_web\\pipeline"
     CHAINAGE_START_KM = 0  #change
-    INTERVAL_METERS = 5
+    INTERVAL_METERS = 1
     LANE_COUNT = 4                      #change # allowed values: 0,2,4,6. 2 -> L1 only, 4 -> L1+L2, 6 -> L1+L2+L3
     LANE_STEP_M =  3.4              # meters per lane offset step
     KML_MERGE_OFFSET_KM = 0.100      #change # 0.100 km -> 100 m bins

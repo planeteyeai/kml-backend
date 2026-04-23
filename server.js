@@ -611,7 +611,7 @@ async function processWithPython(metadata, kmlContent, userDirs) {
                 inputKmlPath,
                 userDirs.pipelineDir,
                 (parseFloat(metadata.chainage) || 0).toString(),
-                "5", // interval
+                "1", // interval (meters)
                 (parseInt(metadata.laneCount) || 4).toString(),
                 (parseFloat(metadata.kmlMergeOffset) || 0.100).toString(),
                 "3.4", // laneStep
