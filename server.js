@@ -1004,6 +1004,54 @@ function isMergeKmlStripPath(absolutePath) {
     return /[/\\](LHS|RHS)_kml_merge_images[/\\]/i.test(absolutePath || '');
 }
 
+function chunkArray(items, chunkSize) {
+    const size = Math.max(1, Number(chunkSize) || 1);
+    const out = [];
+    for (let i = 0; i < items.length; i += size) {
+        out.push(items.slice(i, i + size));
+    }
+    return out;
+}
+
+async function postDistressChunk(distressBase, chunk, timeoutMs) {
+    const formData = new FormData();
+    chunk.forEach((img) => {
+        formData.append('files', fs.createReadStream(img.absolutePath), {
+            filename: img.displayName,
+            contentType: mimeTypeForFile(img.absolutePath),
+        });
+    });
+    const resp = await axios.post(
+        `${distressBase}/process-rotated-images-batch/`,
+        formData,
+        {
+            headers: formData.getHeaders(),
+            maxContentLength: Infinity,
+            maxBodyLength: Infinity,
+            timeout: timeoutMs,
+        }
+    );
+    return resp.data || { results_by_image: {} };
+}
+
+async function runDistressChunks(distressBase, imageSources, timeoutMs, chunkSize, parallelChunks) {
+    const chunks = chunkArray(imageSources, chunkSize);
+    const merged = { results_by_image: {} };
+    let cursor = 0;
+    const workers = Math.max(1, Math.min(Number(parallelChunks) || 1, chunks.length || 1));
+    const workerTasks = Array.from({ length: workers }).map(async () => {
+        while (true) {
+            const idx = cursor++;
+            if (idx >= chunks.length) return;
+            const data = await postDistressChunk(distressBase, chunks[idx], timeoutMs);
+            const byImage = (data && data.results_by_image) || {};
+            Object.assign(merged.results_by_image, byImage);
+        }
+    });
+    await Promise.all(workerTasks);
+    return { merged, chunkCount: chunks.length, chunkSize };
+}
+
 function clearUserWorkingData(userDirs, username, options = {}) {
     const { preserveFiles = [] } = options;
     const preserveSet = new Set(
@@ -1556,9 +1604,16 @@ app.post('/api/distress-imagewise', authenticateToken, async (req, res) => {
     try {
         const username = req.user.username;
         const subPath = String((req.body && req.body.path) || req.query.path || '').trim();
+        const defaultDistressBase =
+            String(process.env.NODE_ENV || '').toLowerCase() === 'production'
+                ? 'https://distressanalyzerv2-0.up.railway.app'
+                : 'http://127.0.0.1:9000';
         const distressBase = String(
-            process.env.DISTRESS_API_BASE || 'https://distressanalyzerv2-0.up.railway.app'
+            process.env.DISTRESS_API_BASE || defaultDistressBase
         ).replace(/\/+$/, '');
+        const timeoutMs = Number(process.env.DISTRESS_BATCH_TIMEOUT_MS || 1200000);
+        const chunkSize = Number(process.env.DISTRESS_BATCH_CHUNK_SIZE || 10);
+        const parallelChunks = Number(process.env.DISTRESS_BATCH_PARALLEL_CHUNKS || 2);
 
         const imageSources = getDistressImageSources(username, subPath);
         if (!imageSources.length) {
@@ -1568,30 +1623,28 @@ app.post('/api/distress-imagewise', authenticateToken, async (req, res) => {
             });
         }
 
-        const formData = new FormData();
-        imageSources.forEach((img) => {
-            formData.append('files', fs.createReadStream(img.absolutePath), {
-                filename: img.displayName,
-                contentType: mimeTypeForFile(img.absolutePath),
-            });
-        });
-
-        const distressResponse = await axios.post(
-            `${distressBase}/process-rotated-images-batch/`,
-            formData,
-            {
-                headers: formData.getHeaders(),
-                maxContentLength: Infinity,
-                maxBodyLength: Infinity,
-                timeout: Number(process.env.DISTRESS_BATCH_TIMEOUT_MS || 600000),
-            }
+        const startedAt = Date.now();
+        const { merged, chunkCount, chunkSize: usedChunkSize } = await runDistressChunks(
+            distressBase,
+            imageSources,
+            timeoutMs,
+            chunkSize,
+            parallelChunks
         );
 
-        const responseBody = distressResponse.data || { results_by_image: {} };
         // Distress service may run in a different container and miss per-user Excels.
         // Enrich geo locally from this user's pipeline Excels before returning.
-        enrichDistressGeoInResults(responseBody.results_by_image, getUserDirs(username));
-        return res.status(distressResponse.status).json(responseBody);
+        enrichDistressGeoInResults(merged.results_by_image, getUserDirs(username));
+        return res.status(200).json({
+            ...merged,
+            meta: {
+                imageCount: imageSources.length,
+                chunkCount,
+                chunkSize: usedChunkSize,
+                parallelChunks: Math.max(1, parallelChunks),
+                elapsedMs: Date.now() - startedAt,
+            },
+        });
     } catch (error) {
         const messageText = String(error.message || '').toLowerCase();
         const status = error.response && error.response.status

@@ -1276,6 +1276,56 @@ def _generate_and_rotate_side_images(side_root, side_tag, image_direction):
         "rotated_merge": rotated_merge,
     }
 
+
+def _run_side_pipeline(side_tag, side_root, side_layer_pairs, image_direction):
+    """
+    Execute KML->merge->image flow for one side end-to-end.
+    Running LHS/RHS side pipelines in parallel reduces total wall-clock time.
+    """
+    side_upper = side_tag.upper()
+    generated_kmls = []
+
+    print(f"5) [{side_upper}] Generating per-layer binned KMLs ...")
+    for a_path, b_path, out_folder, layer_tag in side_layer_pairs:
+        outs = generate_layer_bin_kmls(
+            a_path, b_path, out_folder, layer_tag, bin_km=KML_MERGE_OFFSET_KM
+        )
+        generated_kmls.extend(outs)
+        print(f"  -> [{side_upper}] Generated {len(outs)} bin-KMLs for {layer_tag} in {out_folder}")
+
+    print(f"6) [{side_upper}] Merging layer folders into Merge_KMLs ...")
+    for sub in sorted(os.listdir(side_root)):
+        layer_dir = os.path.join(side_root, sub)
+        if not os.path.isdir(layer_dir):
+            continue
+        out_merge = os.path.join(KML_MERGED_FOLDER, f"{sub}_merge.kml")
+        try:
+            merge_layer_folder_to_single_kml(layer_dir, out_merge)
+            print(f"  -> [{side_upper}] Merged {sub} -> {out_merge}")
+        except Exception as exc:
+            print(f"  -> [{side_upper}] Merge failed for {sub}: {exc}")
+
+    print(f"6.1) [{side_upper}] Merging side files into {side_upper}_merge ...")
+    side_merged = merge_merge_kml_side_files(KML_MERGED_FOLDER, side_upper)
+    if side_merged:
+        print(f"  -> [{side_upper}] Side merged file: {side_merged}")
+
+    print(f"7) [{side_upper}] Populating {side_upper}_kml_merge ...")
+    side_merge_folder = merge_side_lane_folders_into_merge_kml(side_root, side_upper)
+    if side_merge_folder:
+        print(f"  -> [{side_upper}] Side merge folder: {side_merge_folder}")
+
+    print(f"8) [{side_upper}] Generating lane-wise road images ...")
+    image_result = _generate_and_rotate_side_images(side_root, side_upper, image_direction)
+
+    return {
+        "side": side_upper,
+        "generated_kmls": generated_kmls,
+        "side_merged_file": side_merged,
+        "side_merge_folder": side_merge_folder,
+        "image_result": image_result,
+    }
+
 def read_linestring_from_kml(kml_path):
     """Read all <coordinates> from KML and return a combined list of (lon, lat)."""
     try:
@@ -1826,97 +1876,38 @@ def run_pipeline():
     add_pair_if_exists("LHS_L2", "LHS_L3", KML_LHS_FOLDER, left_created)
     add_pair_if_exists("RHS_L2", "RHS_L3", KML_RHS_FOLDER, right_created)
 
-    # 5) Generate per-layer binned KMLs
-    print("5) Generating per-layer binned KMLs ...")
-    all_generated_kmls = []
-    for a_path, b_path, out_folder, layer_tag in layer_pairs:
-        outs = generate_layer_bin_kmls(a_path, b_path, out_folder, layer_tag, bin_km=KML_MERGE_OFFSET_KM)
-        all_generated_kmls.extend(outs)
-        print(f"  -> Generated {len(outs)} bin-KMLs for {layer_tag} in {out_folder}")
-
-    # 6) Merge each layer folder into a single KML under Merge_KMLs
-    print("6) Merging layer folders into single KMLs in Merge_KMLs (parallel) ...")
-    layer_merge_jobs = []
-    for root in [KML_LHS_FOLDER, KML_RHS_FOLDER]:
-        for sub in os.listdir(root):
-            layer_dir = os.path.join(root, sub)
-            if os.path.isdir(layer_dir):
-                out_merge = os.path.join(KML_MERGED_FOLDER, f"{sub}_merge.kml")
-                layer_merge_jobs.append((sub, layer_dir, out_merge))
-
-    if layer_merge_jobs:
-        with ThreadPoolExecutor(max_workers=min(4, len(layer_merge_jobs))) as ex:
-            futures = {
-                ex.submit(merge_layer_folder_to_single_kml, layer_dir, out_merge): (sub, out_merge)
-                for sub, layer_dir, out_merge in layer_merge_jobs
-            }
-            for fut in as_completed(futures):
-                sub, out_merge = futures[fut]
-                try:
-                    fut.result()
-                    print(f"  -> Merged {sub} -> {out_merge}")
-                except Exception as exc:
-                    print(f"  -> Merge failed for {sub}: {exc}")
-
-    # 6.1) Side-level merged KMLs in Merge_KMLs (LHS_merge / RHS_merge)
-    print("6.1) Merging side files into LHS_merge / RHS_merge ...")
-    p = merge_merge_kml_side_files(KML_MERGED_FOLDER, "LHS")
-    if p:
-        print(f"  -> Side merged file: {p}")
-    p = merge_merge_kml_side_files(KML_MERGED_FOLDER, "RHS")
-    if p:
-        print(f"  -> Side merged file: {p}")
-
-    # 7) Per-side merge folders: all chainage KMLs from L1+L2+L3 in one directory
-    print("7) Populating LHS_kml_merge / RHS_kml_merge (parallel) ...")
-    side_merge_jobs = []
-    if left_layers > 0:
-        side_merge_jobs.append((KML_LHS_FOLDER, "LHS"))
-    if right_layers > 0:
-        side_merge_jobs.append((KML_RHS_FOLDER, "RHS"))
-    if side_merge_jobs:
-        with ThreadPoolExecutor(max_workers=min(2, len(side_merge_jobs))) as ex:
-            futures = {
-                ex.submit(merge_side_lane_folders_into_merge_kml, root, side): side
-                for root, side in side_merge_jobs
-            }
-            for fut in as_completed(futures):
-                side = futures[fut]
-                try:
-                    p = fut.result()
-                    if p:
-                        print(f"  -> {side} side merge folder: {p}")
-                except Exception as exc:
-                    print(f"  -> {side} side merge failed: {exc}")
-
-    # 8) Generate lane-wise PNG images from lane KML folders (L1/L2/L3)
-    # Run sides in parallel so LHS and RHS image pipelines execute together.
-    print("8) Generating lane-wise road images for LHS / RHS (parallel sides) ...")
+    # 5-8) Run side pipelines in parallel from KML generation through image rendering.
+    print("5-8) Running LHS/RHS side pipelines in parallel ...")
     side_jobs = []
-    if left_layers > 0:
-        side_jobs.append((KML_LHS_FOLDER, "LHS"))
-    if right_layers > 0:
-        side_jobs.append((KML_RHS_FOLDER, "RHS"))
+    lhs_pairs = [p for p in layer_pairs if p[3].upper().startswith("LHS_")]
+    rhs_pairs = [p for p in layer_pairs if p[3].upper().startswith("RHS_")]
+    if lhs_pairs:
+        side_jobs.append(("LHS", KML_LHS_FOLDER, lhs_pairs))
+    if rhs_pairs:
+        side_jobs.append(("RHS", KML_RHS_FOLDER, rhs_pairs))
 
+    all_generated_kmls = []
     side_results = {}
     if side_jobs:
-        side_workers = min(2, len(side_jobs))
-        with ThreadPoolExecutor(max_workers=side_workers) as ex:
+        with ThreadPoolExecutor(max_workers=min(2, len(side_jobs))) as ex:
             futures = {
-                ex.submit(_generate_and_rotate_side_images, root, side, IMAGE_DIRECTION): side
-                for root, side in side_jobs
+                ex.submit(_run_side_pipeline, side, root, pairs, IMAGE_DIRECTION): side
+                for side, root, pairs in side_jobs
             }
             for fut in as_completed(futures):
                 side = futures[fut]
                 try:
-                    side_results[side] = fut.result()
+                    result = fut.result()
+                    side_results[side] = result
+                    all_generated_kmls.extend(result.get("generated_kmls", []))
                 except Exception as exc:
-                    print(f"  -> {side} image generation failed: {exc}")
+                    print(f"  -> {side} side pipeline failed: {exc}")
 
     for side in ["LHS", "RHS"]:
-        if side not in side_results:
+        result = side_results.get(side)
+        if not result:
             continue
-        res = side_results[side]
+        res = result["image_result"]
         print(f"  -> {side} rotated images: {res['rotated']} files using {IMAGE_DIRECTION}")
         print(f"  -> {side} images: {res['count']} files in {res['out_dir']}")
         print(f"  -> {side} merge rotated images: {res['rotated_merge']} files using {IMAGE_DIRECTION}")
