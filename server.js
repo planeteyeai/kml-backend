@@ -938,6 +938,18 @@ function getLatLonForChainage(rows, chainageValue) {
         return { latitude: null, longitude: null, matchedChainageStartKm: null };
     }
 
+    // Primary rule: match distress "start" with Excel "Chainage Start".
+    const EPS = 1e-9;
+    const exactStart = rows.find((r) => Math.abs(r.chainageStart - chainageKm) <= EPS);
+    if (exactStart) {
+        return {
+            latitude: exactStart.latitude,
+            longitude: exactStart.longitude,
+            matchedChainageStartKm: exactStart.chainageStart,
+        };
+    }
+
+    // Backward-compatible fallback for legacy/boundary values.
     const exact = rows.find((r) => r.chainageStart <= chainageKm && chainageKm < r.chainageEnd);
     if (exact) {
         return {
@@ -987,18 +999,14 @@ function enrichDistressGeoInResults(resultsByImage, userDirs) {
             }
 
             const start = toFiniteNumber(defect.start);
-            const end = toFiniteNumber(defect.end);
-            const middleChainage = (start !== null && end !== null)
-                ? ((start + end) / 2)
-                : (start !== null ? start : null);
-            if (middleChainage === null) {
+            if (start === null) {
                 defect.latitude = null;
                 defect.longitude = null;
                 defect.matched_chainage_start_km = null;
                 return;
             }
 
-            const hit = getLatLonForChainage(rows, middleChainage);
+            const hit = getLatLonForChainage(rows, start);
             defect.latitude = hit.latitude !== null ? Number(hit.latitude.toFixed(8)) : null;
             defect.longitude = hit.longitude !== null ? Number(hit.longitude.toFixed(8)) : null;
             defect.matched_chainage_start_km =
