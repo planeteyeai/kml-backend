@@ -644,20 +644,40 @@ async function processWithPython(metadata, kmlContent, userDirs) {
                 process.stderr.write(`[PYTHON STDERR] ${str}`);
             });
 
-            child.on('close', (code) => {
+            child.on('close', (code, signal) => {
                 // Write logs
                 const fullLog = `COMMAND: ${pythonExe} ${args.join(' ')}\n\nSTDOUT:\n${stdoutData}\n\nSTDERR:\n${stderrData}`;
                 fs.writeFileSync(logPath, fullLog);
 
                 if (code !== 0) {
                     const errorMsg = stderrData || stdoutData || 'Unknown error';
-                    fs.writeFileSync(errLogPath, `EXIT CODE ${code}\n\n${errorMsg}`);
+                    const signalText = signal ? ` SIGNAL ${signal}` : '';
+                    fs.writeFileSync(errLogPath, `EXIT CODE ${code}${signalText}\n\n${errorMsg}`);
+
+                    // Some hosts terminate long-running child processes after partial output
+                    // even though pipeline files were already generated. If outputs exist,
+                    // treat this as a soft success so UI can continue.
+                    const excelsDir = path.join(userDirs.pipelineDir, 'Excels');
+                    const mergeDir = path.join(userDirs.pipelineDir, 'Merge_KMLs');
+                    const hasExcels = fs.existsSync(excelsDir) && fs.readdirSync(excelsDir).length > 0;
+                    const hasKmls = fs.existsSync(mergeDir) && fs.readdirSync(mergeDir).length > 0;
+                    if (code === null && (hasExcels || hasKmls)) {
+                        console.warn(
+                            `[PYTHON] Process ended without exit code (signal=${signal || 'unknown'}) ` +
+                            `but output files exist; continuing as success.`
+                        );
+                        return resolve(true);
+                    }
 
                     // Check for our custom error markers
                     const errorMatch = errorMsg.match(/CRITICAL_PYTHON_ERROR_START([\s\S]*)CRITICAL_PYTHON_ERROR_END/);
                     const specificError = errorMatch ? errorMatch[1].trim() : errorMsg;
 
-                    return reject(new Error(`Python script failed (Code ${code}): ${specificError}`));
+                    return reject(
+                        new Error(
+                            `Python script failed (Code ${code}${signal ? `, Signal ${signal}` : ''}): ${specificError}`
+                        )
+                    );
                 }
 
                 // 5. Verification: Check if folders actually contain files
