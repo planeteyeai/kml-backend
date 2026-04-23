@@ -694,6 +694,17 @@ def _render_synthetic_from_rings(rings, out_png_path, width=2048, height=768, su
     return True, {"source": "synthetic"}
 
 
+def _render_empty_placeholder(out_png_path, width=2048, height=768):
+    """
+    Create a deterministic black placeholder strip when a KML has no polygon geometry.
+    This prevents missing output files for chainages that carry no drawable polygons.
+    """
+    Image.new("RGB", (max(1, width), max(1, height)), (0, 0, 0)).save(
+        out_png_path, format="PNG", optimize=True
+    )
+    return True, {"source": "placeholder", "reason": "no_polygons"}
+
+
 _ee_initialized = False
 
 
@@ -903,7 +914,9 @@ def render_kml_to_road_image(kml_path, out_png_path, width=SATELLITE_IMAGE_WIDTH
     """
     rings = _extract_polygon_rings_from_kml(kml_path)
     if not rings:
-        return False, {"error": "no_polygons"}
+        # Some merged bins may legitimately contain no polygons.
+        # Emit a placeholder PNG so downstream folder contracts remain stable.
+        return _render_empty_placeholder(out_png_path, width=width, height=height)
     min_lon, min_lat, max_lon, max_lat = _bbox_from_rings(rings)
     if max_lon - min_lon < 1e-12 or max_lat - min_lat < 1e-12:
         if ALLOW_SYNTHETIC_FALLBACK:
