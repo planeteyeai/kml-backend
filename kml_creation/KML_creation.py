@@ -694,17 +694,6 @@ def _render_synthetic_from_rings(rings, out_png_path, width=2048, height=768, su
     return True, {"source": "synthetic"}
 
 
-def _render_empty_placeholder(out_png_path, width=2048, height=768):
-    """
-    Create a deterministic black placeholder strip when a KML has no polygon geometry.
-    This prevents missing output files for chainages that carry no drawable polygons.
-    """
-    Image.new("RGB", (max(1, width), max(1, height)), (0, 0, 0)).save(
-        out_png_path, format="PNG", optimize=True
-    )
-    return True, {"source": "placeholder", "reason": "no_polygons"}
-
-
 _ee_initialized = False
 
 
@@ -914,9 +903,7 @@ def render_kml_to_road_image(kml_path, out_png_path, width=SATELLITE_IMAGE_WIDTH
     """
     rings = _extract_polygon_rings_from_kml(kml_path)
     if not rings:
-        # Some merged bins may legitimately contain no polygons.
-        # Emit a placeholder PNG so downstream folder contracts remain stable.
-        return _render_empty_placeholder(out_png_path, width=width, height=height)
+        return False, {"error": "no_polygons"}
     min_lon, min_lat, max_lon, max_lat = _bbox_from_rings(rings)
     if max_lon - min_lon < 1e-12 or max_lat - min_lat < 1e-12:
         if ALLOW_SYNTHETIC_FALLBACK:
@@ -1177,32 +1164,16 @@ def generate_lane_kml_images(side_root, side_tag):
             ))
     jobs = lane_jobs + merge_jobs
 
-    force_synthetic_for_remaining = False
-
     def _run_one(job):
         src, dst_png, kind = job
-        if force_synthetic_for_remaining:
-            try:
-                rings = _extract_polygon_rings_from_kml(src)
-                if rings:
-                    fb_ok, fb_meta = _render_synthetic_from_rings(
-                        rings,
-                        dst_png,
-                        width=SATELLITE_IMAGE_WIDTH,
-                        height=SATELLITE_IMAGE_HEIGHT,
-                    )
-                    if fb_ok:
-                        return src, True, {"fallback": "synthetic_forced", "meta": fb_meta}, kind
-            except Exception as exc:
-                return src, False, {"error": f"synthetic_forced_exception: {exc}"}, kind
         try:
             ok, meta = render_kml_to_road_image(src, dst_png, forced_date=locked_date)
         except Exception as exc:
             return src, False, {"error": f"render_exception: {exc}"}, kind
 
-        # For large pipelines, satellite fetches may fail on public tile services
-        # (rate limits, sparse scenes). Always ensure a usable output via synthetic fallback.
-        if not ok:
+        # For big KMLs, satellite availability can fail for some merge segments.
+        # Ensure merge-strip images are still produced via synthetic fallback.
+        if (not ok) and kind == "merge":
             try:
                 rings = _extract_polygon_rings_from_kml(src)
                 if rings:
@@ -1215,7 +1186,7 @@ def generate_lane_kml_images(side_root, side_tag):
                     if fb_ok:
                         return src, True, {"fallback": "synthetic", "base_error": meta, "meta": fb_meta}, kind
             except Exception as exc:
-                return src, False, {"error": f"synthetic_fallback_exception: {exc}", "base_error": meta}, kind
+                return src, False, {"error": f"merge_fallback_exception: {exc}", "base_error": meta}, kind
         return src, ok, meta, kind
 
     max_workers = max(1, min(IMAGE_GEN_MAX_WORKERS, len(jobs) if jobs else 1))
@@ -1272,17 +1243,6 @@ def generate_lane_kml_images(side_root, side_tag):
                     if _is_rate_limited(meta):
                         chunk_rate_limits += 1
                     print(f"[IMG] Skipped {src}: {meta}")
-
-        # Circuit breaker: if a chunk is heavily throttled, stop hammering satellite
-        # services for this side and generate remaining strips synthetically.
-        if (not force_synthetic_for_remaining) and chunk_rate_limits > 0:
-            ratio = chunk_rate_limits / max(1, len(chunk))
-            if chunk_rate_limits >= 3 or ratio >= 0.45:
-                force_synthetic_for_remaining = True
-                print(
-                    f"[IMG] {side_upper} switching remaining image jobs to synthetic fallback "
-                    f"(rate-limited {chunk_rate_limits}/{len(chunk)} in chunk)."
-                )
 
         if chunk_rate_limits > 0:
             next_delay = base_delay if adaptive_delay_s <= 1e-6 else adaptive_delay_s
