@@ -921,12 +921,20 @@ function readSideGeoRows(userDirs, side) {
     return parsed;
 }
 
-function getLatLonForChainage(rows, chainageMeters) {
+function toChainageKm(chainageValue) {
+    const n = Number(chainageValue);
+    if (!Number.isFinite(n)) return null;
+    // Distress service now returns chainage in km (e.g. 0.9997), while
+    // older payloads used meters (e.g. 999.7). Support both.
+    return Math.abs(n) > 100 ? (n / 1000) : n;
+}
+
+function getLatLonForChainage(rows, chainageValue) {
     if (!Array.isArray(rows) || rows.length === 0) {
         return { latitude: null, longitude: null, matchedChainageStartKm: null };
     }
-    const chainageKm = Number(chainageMeters) / 1000;
-    if (!Number.isFinite(chainageKm)) {
+    const chainageKm = toChainageKm(chainageValue);
+    if (chainageKm === null) {
         return { latitude: null, longitude: null, matchedChainageStartKm: null };
     }
 
@@ -980,17 +988,17 @@ function enrichDistressGeoInResults(resultsByImage, userDirs) {
 
             const start = toFiniteNumber(defect.start);
             const end = toFiniteNumber(defect.end);
-            const middleMeters = (start !== null && end !== null)
+            const middleChainage = (start !== null && end !== null)
                 ? ((start + end) / 2)
                 : (start !== null ? start : null);
-            if (middleMeters === null) {
+            if (middleChainage === null) {
                 defect.latitude = null;
                 defect.longitude = null;
                 defect.matched_chainage_start_km = null;
                 return;
             }
 
-            const hit = getLatLonForChainage(rows, middleMeters);
+            const hit = getLatLonForChainage(rows, middleChainage);
             defect.latitude = hit.latitude !== null ? Number(hit.latitude.toFixed(8)) : null;
             defect.longitude = hit.longitude !== null ? Number(hit.longitude.toFixed(8)) : null;
             defect.matched_chainage_start_km =
