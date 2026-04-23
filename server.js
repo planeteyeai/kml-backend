@@ -880,10 +880,7 @@ function toFiniteNumber(value) {
     return Number.isFinite(n) ? n : null;
 }
 
-function readSideGeoRows(userDirs, side) {
-    const sideUpper = String(side || '').toUpperCase();
-    if (!['LHS', 'RHS'].includes(sideUpper)) return [];
-    const excelPath = path.join(userDirs.pipelineDir, 'Excels', `${sideUpper}_L1.xlsx`);
+function readGeoRowsFromExcel(excelPath) {
     if (!fs.existsSync(excelPath)) return [];
 
     const wb = XLSX.readFile(excelPath, { cellDates: false });
@@ -919,6 +916,31 @@ function readSideGeoRows(userDirs, side) {
         )
         .sort((a, b) => a.chainageStart - b.chainageStart);
     return parsed;
+}
+
+function readSideGeoRows(userDirs, side) {
+    const sideUpper = String(side || '').toUpperCase();
+    if (!['LHS', 'RHS'].includes(sideUpper)) return [];
+    const excelsDir = path.join(userDirs.pipelineDir, 'Excels');
+
+    // Prefer side-specific Save Data outputs first.
+    const preferredFiles = sideUpper === 'LHS'
+        ? ['LHS_L1.xlsx', 'median_lhs_offset.xlsx', 'chainage_points.xlsx']
+        : ['RHS_L1.xlsx', 'median_rhs_offset.xlsx', 'chainage_points.xlsx'];
+
+    for (const fileName of preferredFiles) {
+        const rows = readGeoRowsFromExcel(path.join(excelsDir, fileName));
+        if (rows.length) return rows;
+    }
+
+    // Last fallback: any Excel in the Excels folder with required columns.
+    if (!fs.existsSync(excelsDir)) return [];
+    const files = fs.readdirSync(excelsDir).filter((name) => /\.xlsx$/i.test(name));
+    for (const fileName of files) {
+        const rows = readGeoRowsFromExcel(path.join(excelsDir, fileName));
+        if (rows.length) return rows;
+    }
+    return [];
 }
 
 function toChainageKm(chainageValue) {
