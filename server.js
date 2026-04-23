@@ -2038,12 +2038,6 @@ app.post('/save', authenticateToken, async (req, res) => {
         const newData = req.body;
         newData.id = Date.now();
         newData.timestamp = new Date().toISOString();
-        const forceSync = String((req.query && req.query.sync) || '').toLowerCase();
-        const runAsyncByDefault = String(process.env.SAVE_PIPELINE_ASYNC || '').trim();
-        const asyncEnabled =
-            ['1', 'true', 'yes'].includes(runAsyncByDefault.toLowerCase()) ||
-            (!runAsyncByDefault && String(process.env.NODE_ENV || '').toLowerCase() === 'production');
-        const useAsyncSave = asyncEnabled && !['1', 'true', 'yes'].includes(forceSync);
 
         // Wipe this user's previous pipeline output (LHS/RHS images, merge KMLs, Excels, uploads)
         // so View Pipeline only ever shows the latest run for this user.
@@ -2052,29 +2046,8 @@ app.post('/save', authenticateToken, async (req, res) => {
         // Replace history with the single latest entry (no accumulation across runs).
         fs.writeFileSync(userDirs.dataFile, JSON.stringify([newData], null, 2));
 
-        const fallbackPipelinePath = path.join(userDirs.pipelineDir, 'Pipeline_input_data.geojson');
-
-        if (useAsyncSave) {
-            saveToPipeline(newData.metadata, newData.geometry, userDirs, false)
-                .then((pipelinePath) => {
-                    console.log(`[SAVE][${req.user.username}] Async pipeline completed: ${pipelinePath || 'no path'}`);
-                })
-                .catch((err) => {
-                    console.error(`[SAVE][${req.user.username}] Async pipeline failed:`, err);
-                });
-
-            return res.status(202).json({
-                success: true,
-                processing: true,
-                message: 'Data saved. Pipeline processing started in background.',
-                id: newData.id,
-                pipelinePath: fallbackPipelinePath,
-                mergeImageCount: 0,
-                mergeImages: []
-            });
-        }
-
         const pipelinePath = await saveToPipeline(newData.metadata, newData.geometry, userDirs, false);
+
         if (!pipelinePath) {
             throw new Error('Save operation failed to generate pipeline files');
         }
@@ -2093,7 +2066,7 @@ app.post('/save', authenticateToken, async (req, res) => {
             };
         });
 
-        return res.json({
+        res.json({
             success: true,
             message: 'Data saved and processed successfully',
             id: newData.id,
