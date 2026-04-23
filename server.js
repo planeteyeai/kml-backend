@@ -1028,8 +1028,7 @@ async function postDistressChunk(distressBase, chunk, timeoutMs) {
             headers: formData.getHeaders(),
             maxContentLength: Infinity,
             maxBodyLength: Infinity,
-            // 0 = no timeout in axios/node; wait until downstream responds.
-            timeout: timeoutMs > 0 ? timeoutMs : 0,
+            timeout: timeoutMs,
         }
     );
     return resp.data || { results_by_image: {} };
@@ -1612,8 +1611,7 @@ app.post('/api/distress-imagewise', authenticateToken, async (req, res) => {
         const distressBase = String(
             process.env.DISTRESS_API_BASE || defaultDistressBase
         ).replace(/\/+$/, '');
-        // 0 means no timeout; wait indefinitely for distress batch response.
-        const timeoutMs = Number(process.env.DISTRESS_BATCH_TIMEOUT_MS || 0);
+        const timeoutMs = Number(process.env.DISTRESS_BATCH_TIMEOUT_MS || 1200000);
         const chunkSize = Number(process.env.DISTRESS_BATCH_CHUNK_SIZE || 10);
         const parallelChunks = Number(process.env.DISTRESS_BATCH_PARALLEL_CHUNKS || 2);
 
@@ -2140,9 +2138,6 @@ app.get('/data', authenticateToken, (req, res) => {
     }
 });
 
-const server = app.listen(PORT, "0.0.0.0", () => {
+app.listen(PORT, "0.0.0.0", () => {
     console.log(`Server is running on port ${PORT}`);
 });
-// Disable Node.js server request timeout so long-running jobs can complete.
-server.requestTimeout = 0;
-server.setTimeout(0);
