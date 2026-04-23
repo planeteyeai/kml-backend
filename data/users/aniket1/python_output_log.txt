@@ -1,0 +1,58 @@
+COMMAND: python C:\Users\Aniket.Shinde\Desktop\New folder (2)\kml-backend\kml_creation\KML_creation.py C:\Users\Aniket.Shinde\Desktop\New folder (2)\kml-backend\data\users\aniket1\kml_creation\input.kml C:\Users\Aniket.Shinde\Desktop\New folder (2)\kml-backend\data\users\aniket1\pipeline 0 5 6 0.1 3.4 0.001
+
+STDOUT:
+0) Initializing output folders in C:\Users\Aniket.Shinde\Desktop\New folder (2)\kml-backend\data\users\aniket1\pipeline...
+1) Reading input KML & interpolating...
+2) Saving chainage Excel...
+  [OK] Saved: C:\Users\Aniket.Shinde\Desktop\New folder (2)\kml-backend\data\users\aniket1\pipeline\Excels\chainage_points.xlsx
+-> Creating 5m chainage Line + Point KML...
+-> Chainage Line + Point KML saved: C:\Users\Aniket.Shinde\Desktop\New folder (2)\kml-backend\data\users\aniket1\pipeline\Merge_KMLs\line_polygons_chainage.kml
+2) Computing Median_LHS & Median_RHS (offset = 0.001 m)...
+  [OK] Saved: C:\Users\Aniket.Shinde\Desktop\New folder (2)\kml-backend\data\users\aniket1\pipeline\Excels\median_lhs_offset.xlsx
+  [OK] Saved: C:\Users\Aniket.Shinde\Desktop\New folder (2)\kml-backend\data\users\aniket1\pipeline\Excels\median_rhs_offset.xlsx
+3) Generating lane layers for LANE_COUNT = 6 ...
+-> Left layers created: {'LHS_L1': 'C:\\Users\\Aniket.Shinde\\Desktop\\New folder (2)\\kml-backend\\data\\users\\aniket1\\pipeline\\Excels\\LHS_L1.xlsx', 'LHS_L2': 'C:\\Users\\Aniket.Shinde\\Desktop\\New folder (2)\\kml-backend\\data\\users\\aniket1\\pipeline\\Excels\\LHS_L2.xlsx', 'LHS_L3': 'C:\\Users\\Aniket.Shinde\\Desktop\\New folder (2)\\kml-backend\\data\\users\\aniket1\\pipeline\\Excels\\LHS_L3.xlsx'}
+-> Right layers created: {'RHS_L1': 'C:\\Users\\Aniket.Shinde\\Desktop\\New folder (2)\\kml-backend\\data\\users\\aniket1\\pipeline\\Excels\\RHS_L1.xlsx', 'RHS_L2': 'C:\\Users\\Aniket.Shinde\\Desktop\\New folder (2)\\kml-backend\\data\\users\\aniket1\\pipeline\\Excels\\RHS_L2.xlsx', 'RHS_L3': 'C:\\Users\\Aniket.Shinde\\Desktop\\New folder (2)\\kml-backend\\data\\users\\aniket1\\pipeline\\Excels\\RHS_L3.xlsx'}
+4) Preparing layer pairings for KML generation...
+  [OK] LHS_L1 pair (median -> LHS_L1) added
+  [OK] RHS_L1 pair (median -> RHS_L1) added
+  [OK] Pair registered: LHS_L1 -> LHS_L2
+  [OK] Pair registered: RHS_L1 -> RHS_L2
+  [OK] Pair registered: LHS_L2 -> LHS_L3
+  [OK] Pair registered: RHS_L2 -> RHS_L3
+5) Generating per-layer binned KMLs ...
+  -> Generated 2 bin-KMLs for LHS_L1 in C:\Users\Aniket.Shinde\Desktop\New folder (2)\kml-backend\data\users\aniket1\pipeline\LHS_KMLs\LHS_L1
+  -> Generated 2 bin-KMLs for RHS_L1 in C:\Users\Aniket.Shinde\Desktop\New folder (2)\kml-backend\data\users\aniket1\pipeline\RHS_KMLs\RHS_L1
+  -> Generated 2 bin-KMLs for LHS_L2 in C:\Users\Aniket.Shinde\Desktop\New folder (2)\kml-backend\data\users\aniket1\pipeline\LHS_KMLs\LHS_L2
+  -> Generated 2 bin-KMLs for RHS_L2 in C:\Users\Aniket.Shinde\Desktop\New folder (2)\kml-backend\data\users\aniket1\pipeline\RHS_KMLs\RHS_L2
+  -> Generated 2 bin-KMLs for LHS_L3 in C:\Users\Aniket.Shinde\Desktop\New folder (2)\kml-backend\data\users\aniket1\pipeline\LHS_KMLs\LHS_L3
+  -> Generated 2 bin-KMLs for RHS_L3 in C:\Users\Aniket.Shinde\Desktop\New folder (2)\kml-backend\data\users\aniket1\pipeline\RHS_KMLs\RHS_L3
+6) Merging layer folders into single KMLs in Merge_KMLs (parallel) ...
+  -> Merged LHS_L3 -> C:\Users\Aniket.Shinde\Desktop\New folder (2)\kml-backend\data\users\aniket1\pipeline\Merge_KMLs\LHS_L3_merge.kml
+  -> Merged LHS_L2 -> C:\Users\Aniket.Shinde\Desktop\New folder (2)\kml-backend\data\users\aniket1\pipeline\Merge_KMLs\LHS_L2_merge.kml
+  -> Merged LHS_L1 -> C:\Users\Aniket.Shinde\Desktop\New folder (2)\kml-backend\data\users\aniket1\pipeline\Merge_KMLs\LHS_L1_merge.kml
+  -> Merged RHS_L1 -> C:\Users\Aniket.Shinde\Desktop\New folder (2)\kml-backend\data\users\aniket1\pipeline\Merge_KMLs\RHS_L1_merge.kml
+  -> Merged RHS_L2 -> C:\Users\Aniket.Shinde\Desktop\New folder (2)\kml-backend\data\users\aniket1\pipeline\Merge_KMLs\RHS_L2_merge.kml
+  -> Merged RHS_L3 -> C:\Users\Aniket.Shinde\Desktop\New folder (2)\kml-backend\data\users\aniket1\pipeline\Merge_KMLs\RHS_L3_merge.kml
+6.1) Merging side files into LHS_merge / RHS_merge ...
+  -> Side merged file: C:\Users\Aniket.Shinde\Desktop\New folder (2)\kml-backend\data\users\aniket1\pipeline\Merge_KMLs\LHS_merge.kml
+  -> Side merged file: C:\Users\Aniket.Shinde\Desktop\New folder (2)\kml-backend\data\users\aniket1\pipeline\Merge_KMLs\RHS_merge.kml
+7) Populating LHS_kml_merge / RHS_kml_merge (parallel) ...
+  -> RHS side merge folder: C:\Users\Aniket.Shinde\Desktop\New folder (2)\kml-backend\data\users\aniket1\pipeline\RHS_KMLs\RHS_kml_merge
+  -> LHS side merge folder: C:\Users\Aniket.Shinde\Desktop\New folder (2)\kml-backend\data\users\aniket1\pipeline\LHS_KMLs\LHS_kml_merge
+8) Generating lane-wise road images for LHS / RHS (parallel sides) ...
+[IMG] Using consistent acquisition date for LHS: 2026-02-12
+[IMG] Using consistent acquisition date for RHS: 2026-02-12
+  -> LHS rotated images: 6 files using up_to_down
+  -> LHS images: 6 files in C:\Users\Aniket.Shinde\Desktop\New folder (2)\kml-backend\data\users\aniket1\pipeline\LHS_KMLs\LHS_images
+  -> LHS merge rotated images: 2 files using up_to_down
+  -> LHS merge images: 2 files in C:\Users\Aniket.Shinde\Desktop\New folder (2)\kml-backend\data\users\aniket1\pipeline\LHS_KMLs\LHS_kml_merge_images
+  -> RHS rotated images: 6 files using up_to_down
+  -> RHS images: 6 files in C:\Users\Aniket.Shinde\Desktop\New folder (2)\kml-backend\data\users\aniket1\pipeline\RHS_KMLs\RHS_images
+  -> RHS merge rotated images: 2 files using up_to_down
+  -> RHS merge images: 2 files in C:\Users\Aniket.Shinde\Desktop\New folder (2)\kml-backend\data\users\aniket1\pipeline\RHS_KMLs\RHS_kml_merge_images
+ALL DONE
+Output folder: C:\Users\Aniket.Shinde\Desktop\New folder (2)\kml-backend\data\users\aniket1\pipeline
+
+
+STDERR:
