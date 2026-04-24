@@ -4,10 +4,14 @@ import os
 
 def _load_source_module():
     base_dir = os.path.dirname(os.path.abspath(__file__))
-    source_path = os.getenv(
-        "DISTRESS_DS_SOURCE",
-        os.path.normpath(os.path.join(base_dir, "..", "..", "distressanalyzerv2.0", "ds.py")),
-    )
+    bundled_source_path = os.path.join(base_dir, "distress_source.py")
+    if os.path.isfile(bundled_source_path):
+        source_path = bundled_source_path
+    else:
+        source_path = os.getenv(
+            "DISTRESS_DS_SOURCE",
+            os.path.normpath(os.path.join(base_dir, "..", "distressanalyzerv2.0", "ds.py")),
+        )
     if not os.path.isfile(source_path):
         raise FileNotFoundError(
             f"Distress logic source not found at: {source_path}. "
