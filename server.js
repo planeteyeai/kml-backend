@@ -831,6 +831,25 @@ function mimeTypeForFile(filePath) {
     return 'application/octet-stream';
 }
 
+function withUniqueDisplayNames(sources) {
+    const counts = new Map();
+    return (sources || []).map((src) => {
+        const absolutePath = String(src.absolutePath || '');
+        const baseName = String(src.displayName || path.basename(absolutePath) || 'image');
+        const seen = counts.get(baseName) || 0;
+        counts.set(baseName, seen + 1);
+        if (seen === 0) {
+            return { absolutePath, displayName: baseName };
+        }
+        const ext = path.extname(baseName);
+        const nameOnly = ext ? baseName.slice(0, -ext.length) : baseName;
+        return {
+            absolutePath,
+            displayName: `${nameOnly}__${seen + 1}${ext}`,
+        };
+    });
+}
+
 function getDistressImageSources(username, pipelineSubPath = '') {
     const userDirs = getUserDirs(username);
     const trimmedPath = String(pipelineSubPath || '').trim();
@@ -840,10 +859,10 @@ function getDistressImageSources(username, pipelineSubPath = '') {
         const mergeEntries = getMergeImageEntries(username).filter((img) =>
             isMergeKmlStripPath(img.absolutePath)
         );
-        return mergeEntries.map((img) => ({
+        return withUniqueDisplayNames(mergeEntries.map((img) => ({
             absolutePath: img.absolutePath,
             displayName: img.fileName,
-        }));
+        })));
     }
 
     const resolvedPath = path.resolve(userDirs.pipelineDir, trimmedPath);
@@ -858,10 +877,10 @@ function getDistressImageSources(username, pipelineSubPath = '') {
     }
 
     const files = collectImageFilesFromPath(resolvedPath);
-    return files.map((absolutePath) => ({
+    return withUniqueDisplayNames(files.map((absolutePath) => ({
         absolutePath,
         displayName: path.basename(absolutePath),
-    }));
+    })));
 }
 
 function inferSideFromImageName(name = '') {
