@@ -15,7 +15,7 @@ const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
 const sqlite3 = require('sqlite3').verbose();
 
-const { exec } = require('child_process');
+const { exec, spawn } = require('child_process');
 const util = require('util');
 const execPromise = util.promisify(exec);
 
@@ -1051,28 +1051,67 @@ function chunkArray(items, chunkSize) {
     return out;
 }
 
-async function postDistressChunk(distressBase, chunk, timeoutMs) {
-    const formData = new FormData();
-    chunk.forEach((img) => {
-        formData.append('files', fs.createReadStream(img.absolutePath), {
-            filename: img.displayName,
-            contentType: mimeTypeForFile(img.absolutePath),
-        });
+async function postDistressChunk(chunk, timeoutMs) {
+    const payload = JSON.stringify({
+        images: chunk.map((img) => ({
+            absolutePath: String(img.absolutePath || ''),
+            displayName: String(img.displayName || ''),
+        })),
     });
-    const resp = await axios.post(
-        `${distressBase}/process-rotated-images-batch/`,
-        formData,
-        {
-            headers: formData.getHeaders(),
-            maxContentLength: Infinity,
-            maxBodyLength: Infinity,
-            timeout: timeoutMs,
-        }
-    );
-    return resp.data || { results_by_image: {} };
+    const pythonBin = process.env.DISTRESS_PYTHON_BIN || 'python';
+    const runnerPath = process.env.DISTRESS_LOCAL_RUNNER_PATH
+        ? path.resolve(process.env.DISTRESS_LOCAL_RUNNER_PATH)
+        : path.join(__dirname, 'distress_engine', 'runner.py');
+
+    return new Promise((resolve, reject) => {
+        const child = spawn(pythonBin, [runnerPath], {
+            cwd: __dirname,
+            stdio: ['pipe', 'pipe', 'pipe'],
+        });
+        let stdout = '';
+        let stderr = '';
+        let timedOut = false;
+        const killTimer = setTimeout(() => {
+            timedOut = true;
+            child.kill();
+        }, Math.max(1000, Number(timeoutMs) || 1200000));
+
+        child.stdout.on('data', (chunkData) => {
+            stdout += chunkData.toString();
+        });
+        child.stderr.on('data', (chunkData) => {
+            stderr += chunkData.toString();
+        });
+        child.on('error', (err) => {
+            clearTimeout(killTimer);
+            reject(err);
+        });
+        child.on('close', (code) => {
+            clearTimeout(killTimer);
+            if (timedOut) {
+                return reject(new Error('Local distress processing timed out'));
+            }
+            if (code !== 0) {
+                return reject(
+                    new Error(
+                        `Local distress runner failed (code=${code}): ${stderr || 'no stderr output'}`
+                    )
+                );
+            }
+            try {
+                const parsed = stdout ? JSON.parse(stdout) : { results_by_image: {} };
+                resolve(parsed || { results_by_image: {} });
+            } catch (e) {
+                reject(new Error(`Invalid JSON from local distress runner: ${e.message}`));
+            }
+        });
+
+        child.stdin.write(payload);
+        child.stdin.end();
+    });
 }
 
-async function runDistressChunks(distressBase, imageSources, timeoutMs, chunkSize, parallelChunks) {
+async function runDistressChunks(imageSources, timeoutMs, chunkSize, parallelChunks) {
     const chunks = chunkArray(imageSources, chunkSize);
     const merged = { results_by_image: {} };
     let cursor = 0;
@@ -1081,7 +1120,7 @@ async function runDistressChunks(distressBase, imageSources, timeoutMs, chunkSiz
         while (true) {
             const idx = cursor++;
             if (idx >= chunks.length) return;
-            const data = await postDistressChunk(distressBase, chunks[idx], timeoutMs);
+            const data = await postDistressChunk(chunks[idx], timeoutMs);
             const byImage = (data && data.results_by_image) || {};
             Object.assign(merged.results_by_image, byImage);
         }
@@ -1642,13 +1681,6 @@ app.post('/api/distress-imagewise', authenticateToken, async (req, res) => {
     try {
         const username = req.user.username;
         const subPath = String((req.body && req.body.path) || req.query.path || '').trim();
-        const defaultDistressBase =
-            String(process.env.NODE_ENV || '').toLowerCase() === 'production'
-                ? 'https://distressanalyzerv2-0.up.railway.app'
-                : 'http://127.0.0.1:9000';
-        const distressBase = String(
-            process.env.DISTRESS_API_BASE || defaultDistressBase
-        ).replace(/\/+$/, '');
         const timeoutMs = Number(process.env.DISTRESS_BATCH_TIMEOUT_MS || 1200000);
         const chunkSize = Number(process.env.DISTRESS_BATCH_CHUNK_SIZE || 10);
         const parallelChunks = Number(process.env.DISTRESS_BATCH_PARALLEL_CHUNKS || 2);
@@ -1669,10 +1701,9 @@ app.post('/api/distress-imagewise', authenticateToken, async (req, res) => {
 
         if (imageSources.length <= 1) {
             // Fast path for single image avoids chunk orchestration overhead.
-            merged = await postDistressChunk(distressBase, imageSources, timeoutMs);
+            merged = await postDistressChunk(imageSources, timeoutMs);
         } else {
             const batch = await runDistressChunks(
-                distressBase,
                 imageSources,
                 timeoutMs,
                 chunkSize,
