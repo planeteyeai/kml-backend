@@ -2016,6 +2016,7 @@ app.post('/upload-kml', authenticateToken, upload.single('kmlFile'), async (req,
                 offsetType: req.body.offsetType || '',
                 laneCount: req.body.laneCount || '',
                 kmlMergeOffset: req.body.kmlMergeOffset || '',
+                projectName: req.body.projectName || '',
                 startDate: req.body.startDate || '',
                 endDate: req.body.endDate || '',
                 imageDirection: req.body.imageDirection || 'down_to_up'
