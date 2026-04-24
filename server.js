@@ -33,6 +33,8 @@ const DATA_DIR = process.env.DATA_DIR
 const USERS_FILE = path.join(DATA_DIR, 'users.json');
 const IMAGE_DB_FILE = path.join(DATA_DIR, 'kml_images.db');
 let imageDb = null;
+const MERGE_IMAGES_CACHE_TTL_MS = Math.max(0, Number(process.env.MERGE_IMAGES_CACHE_TTL_MS || 30000));
+const mergeImagesCache = new Map();
 
 function openImageDb() {
     if (imageDb) return imageDb;
@@ -302,7 +304,7 @@ app.post('/api/login/images', (req, res) => {
         const tokenUsername = u === HARDCODED_TEST_USER ? HARDCODED_TEST_USER : u;
         const token = jwt.sign({ username: tokenUsername }, JWT_SECRET);
 
-        const raw = getMergeImageEntries(tokenUsername);
+        const raw = getCachedMergeImageEntries(tokenUsername);
         const baseUrl = getRequestBaseUrl(req);
 
         const images = raw.map((img) => {
@@ -798,6 +800,32 @@ function getMergeImageEntries(username) {
     return images;
 }
 
+function invalidateMergeImagesCache(username) {
+    const key = String(username || '').trim();
+    if (!key) return;
+    mergeImagesCache.delete(key);
+}
+
+function getCachedMergeImageEntries(username, options = {}) {
+    const key = String(username || '').trim();
+    if (!key) return [];
+    const forceRefresh = !!options.forceRefresh;
+    const now = Date.now();
+    const hit = mergeImagesCache.get(key);
+    if (
+        !forceRefresh &&
+        hit &&
+        Array.isArray(hit.entries) &&
+        MERGE_IMAGES_CACHE_TTL_MS > 0 &&
+        now - hit.cachedAt <= MERGE_IMAGES_CACHE_TTL_MS
+    ) {
+        return hit.entries;
+    }
+    const fresh = getMergeImageEntries(key);
+    mergeImagesCache.set(key, { cachedAt: now, entries: fresh });
+    return fresh;
+}
+
 function collectImageFilesFromPath(targetPath) {
     const imageExtRegex = /\.(png|jpe?g|gif|webp|bmp)$/i;
     const out = [];
@@ -837,7 +865,7 @@ function getDistressImageSources(username, pipelineSubPath = '') {
 
     // Default: use merge-strip images generated from KML pipeline.
     if (!trimmedPath) {
-        const mergeEntries = getMergeImageEntries(username).filter((img) =>
+        const mergeEntries = getCachedMergeImageEntries(username).filter((img) =>
             isMergeKmlStripPath(img.absolutePath)
         );
         return mergeEntries.map((img) => ({
@@ -1208,6 +1236,7 @@ function clearUserWorkingData(userDirs, username, options = {}) {
     }
 
     console.log(`User data cleared for: ${username}`);
+    invalidateMergeImagesCache(username);
 }
 
 // WATCHER REMOVED to prevent race conditions during save operations.
@@ -1225,7 +1254,7 @@ app.get('/api/merge-images/:username', requireMergeImagesAccess, (req, res) => {
         // all / lanes / (empty) = everything getMergeImageEntries finds (merge strips + per-lane images).
         const onlyMergeKml = ['1', 'true', 'yes', 'merge_kml', 'merge'].includes(onlyRaw);
         const onlyLanes = ['lanes', 'lane', 'per_lane', 'lhs_images', 'rhs_images'].includes(onlyRaw);
-        let raw = getMergeImageEntries(username);
+        let raw = getCachedMergeImageEntries(username);
         const unfilteredCount = raw.length;
         if (onlyMergeKml) {
             raw = raw.filter((img) => isMergeKmlStripPath(img.absolutePath));
@@ -1577,6 +1606,7 @@ app.get('/api/public-image', (req, res) => {
             return res.status(404).json({ success: false, message: 'Image not found' });
         }
 
+        res.set('Cache-Control', 'private, max-age=300');
         return res.sendFile(normalizedRequestedPath);
     } catch (error) {
         console.error('Error serving public image by path:', error);
@@ -2084,7 +2114,7 @@ app.post('/upload-kml', authenticateToken, upload.single('kmlFile'), async (req,
             throw new Error('Pipeline processing failed to return a valid path');
         }
 
-        const mergeImages = getMergeImageEntries(req.user.username).map((img) => {
+        const mergeImages = getCachedMergeImageEntries(req.user.username, { forceRefresh: true }).map((img) => {
             const links = publicImageLinks(req, img.absolutePath);
             return {
                 side: img.side,
@@ -2136,7 +2166,7 @@ app.post('/save', authenticateToken, async (req, res) => {
             throw new Error('Save operation failed to generate pipeline files');
         }
 
-        const mergeImages = getMergeImageEntries(req.user.username).map((img) => {
+        const mergeImages = getCachedMergeImageEntries(req.user.username, { forceRefresh: true }).map((img) => {
             const links = publicImageLinks(req, img.absolutePath);
             return {
                 side: img.side,
