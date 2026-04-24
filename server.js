@@ -1650,8 +1650,6 @@ app.post('/api/distress-imagewise', authenticateToken, async (req, res) => {
             process.env.DISTRESS_API_BASE || defaultDistressBase
         ).replace(/\/+$/, '');
         const timeoutMs = Number(process.env.DISTRESS_BATCH_TIMEOUT_MS || 1200000);
-        const chunkSize = Number(process.env.DISTRESS_BATCH_CHUNK_SIZE || 10);
-        const parallelChunks = Number(process.env.DISTRESS_BATCH_PARALLEL_CHUNKS || 2);
 
         const imageSources = getDistressImageSources(username, subPath);
         if (!imageSources.length) {
@@ -1662,13 +1660,15 @@ app.post('/api/distress-imagewise', authenticateToken, async (req, res) => {
         }
 
         const startedAt = Date.now();
-        const { merged, chunkCount, chunkSize: usedChunkSize } = await runDistressChunks(
+        // Single-request batch keeps behavior aligned with distress ds.py endpoint.
+        const merged = await postDistressChunk(
             distressBase,
             imageSources,
-            timeoutMs,
-            chunkSize,
-            parallelChunks
+            timeoutMs
         );
+        const chunkCount = 1;
+        const usedChunkSize = imageSources.length;
+        const usedParallelChunks = 1;
 
         // Distress service may run in a different container and miss per-user Excels.
         // Enrich geo locally from this user's pipeline Excels before returning.
@@ -1679,7 +1679,7 @@ app.post('/api/distress-imagewise', authenticateToken, async (req, res) => {
                 imageCount: imageSources.length,
                 chunkCount,
                 chunkSize: usedChunkSize,
-                parallelChunks: Math.max(1, parallelChunks),
+                parallelChunks: usedParallelChunks,
                 elapsedMs: Date.now() - startedAt,
             },
         });
