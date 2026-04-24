@@ -619,5 +619,30 @@ def process_image_bytes(image_bytes, filename, process_type, persist_excels=True
 
 
 def process_rotated_image_job(image_name, image_bytes):
-    _, result, _, _ = process_image_bytes(image_bytes, image_name, "already_rotated", persist_excels=False)
-    return image_name, result
+    candidate_modes = ["already_rotated", "down_to_up", "up_to_down"]
+    best_result = None
+    best_score = (-1, -1, -1)
+
+    for mode in candidate_modes:
+        try:
+            _, result, _, _ = process_image_bytes(
+                image_bytes, image_name, mode, persist_excels=False
+            )
+        except Exception:
+            continue
+
+        defects = result.get("defects", []) if isinstance(result, dict) else []
+        meta = result.get("meta", {}) if isinstance(result, dict) else {}
+        defect_count = len(defects) if isinstance(defects, list) else 0
+        edge_count = int(meta.get("edges", 0) or 0)
+        component_count = int(meta.get("components", 0) or 0)
+        score = (defect_count, edge_count, component_count)
+        if score > best_score:
+            best_score = score
+            best_result = result
+
+    if best_result is None:
+        _, best_result, _, _ = process_image_bytes(
+            image_bytes, image_name, "already_rotated", persist_excels=False
+        )
+    return image_name, best_result
