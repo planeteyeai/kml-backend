@@ -883,6 +883,34 @@ function getDistressImageSources(username, pipelineSubPath = '') {
     })));
 }
 
+function resolveDistressImageSourceByName(username, imageName, pipelineSubPath = '') {
+    const wanted = String(imageName || '').trim().toLowerCase();
+    if (!wanted) {
+        throw new Error('imageName is required');
+    }
+    const sources = getDistressImageSources(username, pipelineSubPath);
+    const matches = sources.filter((src) => {
+        const display = String(src.displayName || '').trim().toLowerCase();
+        const base = path.basename(String(src.absolutePath || '')).toLowerCase();
+        return display === wanted || base === wanted;
+    });
+    if (!matches.length) {
+        const err = new Error('Image not found in distress source set');
+        err.code = 'IMAGE_NOT_FOUND';
+        throw err;
+    }
+    if (matches.length > 1) {
+        const err = new Error('Multiple images matched imageName. Use unique image file name.');
+        err.code = 'IMAGE_AMBIGUOUS';
+        err.matches = matches.map((m) => ({
+            displayName: m.displayName,
+            fileName: path.basename(m.absolutePath || ''),
+        }));
+        throw err;
+    }
+    return matches[0];
+}
+
 function inferSideFromImageName(name = '') {
     const upper = String(name || '').toUpperCase();
     if (/(^|[^A-Z0-9])LHS([^A-Z0-9]|$)/.test(upper)) return 'LHS';
@@ -1120,6 +1148,71 @@ async function postDistressChunk(chunk, timeoutMs) {
             try {
                 const parsed = stdout ? JSON.parse(stdout) : { results_by_image: {} };
                 resolve(parsed || { results_by_image: {} });
+            } catch (e) {
+                reject(new Error(`Invalid JSON from local distress runner: ${e.message}`));
+            }
+        });
+
+        child.stdin.write(payload);
+        child.stdin.end();
+    });
+}
+
+async function postDistressExpandedExcel(imageSource, outputPath, timeoutMs) {
+    const payload = JSON.stringify({
+        operation: 'export_expanded_excel',
+        image: {
+            absolutePath: String(imageSource.absolutePath || ''),
+            displayName: String(imageSource.displayName || ''),
+        },
+        outputPath: String(outputPath || ''),
+    });
+    const pythonBin = process.env.DISTRESS_PYTHON_BIN || 'python';
+    const runnerPath = process.env.DISTRESS_LOCAL_RUNNER_PATH
+        ? path.resolve(process.env.DISTRESS_LOCAL_RUNNER_PATH)
+        : path.join(__dirname, 'distress_engine', 'runner.py');
+
+    return new Promise((resolve, reject) => {
+        const child = spawn(pythonBin, [runnerPath], {
+            cwd: __dirname,
+            stdio: ['pipe', 'pipe', 'pipe'],
+        });
+        let stdout = '';
+        let stderr = '';
+        let timedOut = false;
+        const killTimer = setTimeout(() => {
+            timedOut = true;
+            child.kill();
+        }, Math.max(1000, Number(timeoutMs) || 1200000));
+
+        child.stdout.on('data', (chunkData) => {
+            stdout += chunkData.toString();
+        });
+        child.stderr.on('data', (chunkData) => {
+            stderr += chunkData.toString();
+        });
+        child.on('error', (err) => {
+            clearTimeout(killTimer);
+            reject(err);
+        });
+        child.on('close', (code) => {
+            clearTimeout(killTimer);
+            if (timedOut) {
+                return reject(new Error('Local distress expanded-excel export timed out'));
+            }
+            if (code !== 0) {
+                return reject(
+                    new Error(
+                        `Local distress expanded-excel runner failed (code=${code}): ${stderr || 'no stderr output'}`
+                    )
+                );
+            }
+            try {
+                const parsed = stdout ? JSON.parse(stdout) : { ok: false, error: 'No JSON output from runner' };
+                if (!parsed.ok) {
+                    return reject(new Error(parsed.error || 'Expanded excel export failed'));
+                }
+                resolve(parsed);
             } catch (e) {
                 reject(new Error(`Invalid JSON from local distress runner: ${e.message}`));
             }
@@ -1763,6 +1856,62 @@ app.post('/api/distress-imagewise', authenticateToken, async (req, res) => {
             { error: error.message || 'Unknown distress pipeline error' };
         console.error('Error in /api/distress-imagewise:', detail);
         return res.status(status).json(detail);
+    }
+});
+
+app.post('/api/distress-expanded-excel', authenticateToken, async (req, res) => {
+    let outputPath = '';
+    try {
+        const username = req.user.username;
+        const imageName = String((req.body && req.body.imageName) || req.query.imageName || '').trim();
+        const subPath = String((req.body && req.body.path) || req.query.path || '').trim();
+        const timeoutMs = Number(process.env.DISTRESS_BATCH_TIMEOUT_MS || 1200000);
+        if (!imageName) {
+            return res.status(400).json({ success: false, message: 'imageName is required' });
+        }
+
+        const source = resolveDistressImageSourceByName(username, imageName, subPath);
+        const tempRoot = path.join(os.tmpdir(), 'kml-distress-expanded', username);
+        fs.mkdirSync(tempRoot, { recursive: true });
+        const baseName = path.parse(path.basename(source.displayName || source.absolutePath || 'image')).name;
+        const safeBase = baseName.replace(/[^\w.-]+/g, '_');
+        outputPath = path.join(tempRoot, `${safeBase}_${Date.now()}_expanded.xlsx`);
+
+        await postDistressExpandedExcel(source, outputPath, timeoutMs);
+        const downloadName = `${safeBase}_expanded.xlsx`;
+        return res.download(outputPath, downloadName, (err) => {
+            try {
+                if (fs.existsSync(outputPath)) fs.unlinkSync(outputPath);
+            } catch (cleanupErr) {
+                console.error('Failed to cleanup temporary expanded excel:', cleanupErr);
+            }
+            if (err) {
+                console.error('Error sending expanded excel:', err);
+            }
+        });
+    } catch (error) {
+        if (outputPath) {
+            try {
+                if (fs.existsSync(outputPath)) fs.unlinkSync(outputPath);
+            } catch (cleanupErr) {
+                console.error('Failed to cleanup temporary expanded excel on error:', cleanupErr);
+            }
+        }
+        if (error && error.code === 'IMAGE_NOT_FOUND') {
+            return res.status(404).json({ success: false, message: error.message });
+        }
+        if (error && error.code === 'IMAGE_AMBIGUOUS') {
+            return res.status(409).json({
+                success: false,
+                message: error.message,
+                matches: error.matches || [],
+            });
+        }
+        console.error('Error in /api/distress-expanded-excel:', error);
+        return res.status(500).json({
+            success: false,
+            message: error.message || 'Failed to generate expanded excel',
+        });
     }
 });
 

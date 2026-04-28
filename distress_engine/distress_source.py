@@ -172,6 +172,64 @@ def generate_expanded_excel(temp_path, output_path):
     wb_out.save(output_path)
 
 
+def generate_expanded_excel_from_df(temp_df, output_path):
+    if not isinstance(temp_df, pd.DataFrame) or temp_df.empty:
+        raise ValueError("Cannot generate expanded Excel from empty dataframe")
+    if "Distance_meter" not in temp_df.columns:
+        raise ValueError("Dataframe must include Distance_meter column")
+
+    source_headers = list(temp_df.columns)
+    source_h_columns = []
+    output_headers = ["Distance_meter"]
+    for source_col_idx, header in enumerate(source_headers, start=1):
+        if isinstance(header, str) and HEADER_PATTERN.fullmatch(header):
+            suffix = HEADER_PATTERN.fullmatch(header).group(1)
+            source_h_columns.append((source_col_idx, header, suffix))
+            output_headers.extend(
+                [
+                    header,
+                    f"max_H{suffix}",
+                    f"min_H{suffix}",
+                    f"AvgH{suffix}",
+                    f"diffH{suffix}",
+                    f"newH{suffix}",
+                ]
+            )
+    if not source_h_columns:
+        raise ValueError("No H_ columns found to build expanded Excel")
+
+    wb_out = Workbook()
+    ws_out = wb_out.active
+    for col_idx, header in enumerate(output_headers, start=1):
+        ws_out.cell(1, col_idx, header)
+
+    source_rows = temp_df.reset_index(drop=True).to_dict(orient="records")
+    max_row = len(source_rows) + 1
+    for row_idx, row_data in enumerate(source_rows, start=2):
+        ws_out.cell(row_idx, 1, row_data.get("Distance_meter"))
+        out_col = 2
+        for _, source_header, _ in source_h_columns:
+            h_letter = get_column_letter(out_col)
+            max_letter = get_column_letter(out_col + 1)
+            min_letter = get_column_letter(out_col + 2)
+            avg_letter = get_column_letter(out_col + 3)
+            diff_letter = get_column_letter(out_col + 4)
+            ws_out.cell(row_idx, out_col, row_data.get(source_header))
+            ws_out.cell(row_idx, out_col + 1, f"=MAX(${h_letter}$2:${h_letter}${max_row})-{h_letter}{row_idx}")
+            ws_out.cell(row_idx, out_col + 2, f"=MIN(${h_letter}$2:${h_letter}${max_row})-{h_letter}{row_idx}")
+            ws_out.cell(row_idx, out_col + 3, f"=AVERAGE({max_letter}{row_idx},{min_letter}{row_idx})")
+            ws_out.cell(row_idx, out_col + 4, f"={h_letter}{row_idx}-{avg_letter}{row_idx}")
+            if row_idx < max_row:
+                ws_out.cell(row_idx, out_col + 5, f"={diff_letter}{row_idx + 1}-{diff_letter}{row_idx}")
+            out_col += 6
+
+    for col in range(2, ws_out.max_column + 1):
+        header = ws_out.cell(1, col).value
+        if isinstance(header, str) and not header.startswith("newH"):
+            ws_out.column_dimensions[get_column_letter(col)].hidden = True
+    wb_out.save(output_path)
+
+
 def normalize_grayscale(matrix):
     min_val = 0.0
     for row in matrix:
@@ -548,13 +606,11 @@ def is_99x_mod_hundred(km_value):
     return 99.0 < rem < 100.0
 
 
-def process_image_bytes(image_bytes, filename, process_type, persist_excels=True):
-    file_id = str(uuid.uuid4())
+def build_temp_dataframe_from_image_bytes(image_bytes, filename, process_type):
     nparr = np.frombuffer(image_bytes, np.uint8)
     img = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
     if img is None:
         raise ValueError("Invalid image")
-
     if process_type == "already_rotated":
         processed = img
     elif process_type == "down_to_up":
@@ -563,9 +619,13 @@ def process_image_bytes(image_bytes, filename, process_type, persist_excels=True
         processed = fix_direction(pca_correct(force_horizontal(rotate_rectangle(cv2.flip(img, 0)))))
     else:
         raise ValueError("Invalid process_type")
-
     temp_df = create_temp_dataframe(processed, filename)
-    temp_df = trim_temp_dataframe_rows(temp_df, top_rows=3, bottom_rows=3)
+    return trim_temp_dataframe_rows(temp_df, top_rows=3, bottom_rows=3)
+
+
+def process_image_bytes(image_bytes, filename, process_type, persist_excels=True):
+    file_id = str(uuid.uuid4())
+    temp_df = build_temp_dataframe_from_image_bytes(image_bytes, filename, process_type)
     result = detect_distresses_from_generated_excel(temp_df=temp_df)
     base_chainage_m = extract_chainage_start_meters(filename)
 
@@ -646,3 +706,38 @@ def process_rotated_image_job(image_name, image_bytes):
             image_bytes, image_name, "already_rotated", persist_excels=False
         )
     return image_name, best_result
+
+
+def export_expanded_excel_for_image_job(image_name, image_bytes, output_path):
+    candidate_modes = ["already_rotated", "down_to_up", "up_to_down"]
+    best_mode = "already_rotated"
+    best_score = (-1, -1, -1)
+
+    for mode in candidate_modes:
+        try:
+            _, result, _, _ = process_image_bytes(
+                image_bytes, image_name, mode, persist_excels=False
+            )
+        except Exception:
+            continue
+        defects = result.get("defects", []) if isinstance(result, dict) else []
+        meta = result.get("meta", {}) if isinstance(result, dict) else {}
+        defect_count = len(defects) if isinstance(defects, list) else 0
+        edge_count = int(meta.get("edges", 0) or 0)
+        component_count = int(meta.get("components", 0) or 0)
+        score = (defect_count, edge_count, component_count)
+        if score > best_score:
+            best_score = score
+            best_mode = mode
+
+    output_dir = os.path.dirname(os.path.abspath(output_path))
+    os.makedirs(output_dir, exist_ok=True)
+    temp_df = build_temp_dataframe_from_image_bytes(image_bytes, image_name, best_mode)
+    generate_expanded_excel_from_df(temp_df, output_path)
+    return {
+        "image_name": image_name,
+        "expanded_excel_path": os.path.abspath(output_path),
+        "rows": int(temp_df.shape[0]),
+        "columns": int(temp_df.shape[1]),
+        "mode": best_mode,
+    }

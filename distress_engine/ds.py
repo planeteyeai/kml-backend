@@ -27,3 +27,4 @@ def _load_source_module():
 
 _source = _load_source_module()
 process_rotated_image_job = _source.process_rotated_image_job
+export_expanded_excel_for_image_job = _source.export_expanded_excel_for_image_job
