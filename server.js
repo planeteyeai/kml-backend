@@ -624,9 +624,9 @@ async function processWithPython(metadata, kmlContent, userDirs) {
             const { spawn } = require('child_process');
             const childEnv = {
                 ...process.env,
-                SATELLITE_DATE_START: metadata.startDate || process.env.SATELLITE_DATE_START || '2026-02-10',
-                SATELLITE_DATE_END: metadata.endDate || process.env.SATELLITE_DATE_END || '2026-02-20',
-                IMAGE_DIRECTION: metadata.imageDirection || process.env.IMAGE_DIRECTION || 'down_to_up',
+                SATELLITE_DATE_START: process.env.SATELLITE_DATE_START || '2026-02-10',
+                SATELLITE_DATE_END: process.env.SATELLITE_DATE_END || '2026-02-20',
+                IMAGE_DIRECTION: process.env.IMAGE_DIRECTION || 'down_to_up',
             };
             const child = spawn(pythonExe, args, { env: childEnv });
 
@@ -691,6 +691,64 @@ async function saveToPipeline(metadata, content, userDirs, isKmlContent = false)
     let kmlContent = isKmlContent ? content : geojsonToKml(content, 'Drawn_Data');
     await processWithPython(metadata, kmlContent, userDirs);
     return 'Merge_KMLs';
+}
+
+function collectKmlFilesInDir(dirPath, files = [], relativeTo = dirPath) {
+    if (!fs.existsSync(dirPath)) return files;
+    const entries = fs.readdirSync(dirPath, { withFileTypes: true });
+    for (const entry of entries) {
+        const full = path.join(dirPath, entry.name);
+        if (entry.isDirectory()) {
+            collectKmlFilesInDir(full, files, relativeTo);
+        } else if (entry.isFile() && entry.name.toLowerCase().endsWith('.kml')) {
+            const rel = path.relative(relativeTo, full).replace(/\\/g, '/');
+            files.push({ absolutePath: full, archiveName: rel || entry.name });
+        }
+    }
+    return files;
+}
+
+function getGeneratedKmlFiles(userDirs) {
+    const mergeDir = path.join(userDirs.pipelineDir, 'Merge_KMLs');
+    return collectKmlFilesInDir(mergeDir);
+}
+
+function sendGeneratedKmlResponse(res, userDirs, downloadBaseName = 'generated_kml') {
+    const files = getGeneratedKmlFiles(userDirs);
+    if (!files.length) {
+        return res.status(500).json({
+            success: false,
+            message: 'No generated KML files found',
+            details: 'Pipeline completed but Merge_KMLs folder is empty.'
+        });
+    }
+
+    if (files.length === 1) {
+        const file = files[0];
+        res.setHeader('Content-Type', 'application/vnd.google-earth.kml+xml; charset=utf-8');
+        res.setHeader(
+            'Content-Disposition',
+            `attachment; filename="${file.archiveName.replace(/[^\w.\-]+/g, '_')}"`
+        );
+        return res.send(fs.readFileSync(file.absolutePath, 'utf8'));
+    }
+
+    const safeZipName = `${downloadBaseName}.zip`.replace(/[^\w.\-]+/g, '_');
+    res.setHeader('Content-Type', 'application/zip');
+    res.setHeader('Content-Disposition', `attachment; filename="${safeZipName}"`);
+
+    const archive = archiver('zip', { zlib: { level: 9 } });
+    archive.on('error', (err) => {
+        console.error('KML zip archive error:', err);
+        if (!res.headersSent) {
+            res.status(500).json({ success: false, message: 'Failed to create KML archive' });
+        }
+    });
+    archive.pipe(res);
+    files.forEach((file) => {
+        archive.file(file.absolutePath, { name: file.archiveName });
+    });
+    return archive.finalize();
 }
 
 function getRequestBaseUrl(req) {
@@ -2229,10 +2287,6 @@ app.post('/upload-kml', authenticateToken, upload.single('kmlFile'), async (req,
                 offsetType: req.body.offsetType || '',
                 laneCount: req.body.laneCount || '',
                 kmlMergeOffset: req.body.kmlMergeOffset || '',
-                projectName: req.body.projectName || '',
-                startDate: req.body.startDate || '',
-                endDate: req.body.endDate || '',
-                imageDirection: req.body.imageDirection || 'down_to_up'
             },
             geometry: geoJson.features,
             filePath: userFilePath,
@@ -2252,28 +2306,8 @@ app.post('/upload-kml', authenticateToken, upload.single('kmlFile'), async (req,
             throw new Error('Pipeline processing failed to return a valid path');
         }
 
-        const mergeImages = getMergeImageEntries(req.user.username).map((img) => {
-            const links = publicImageLinks(req, img.absolutePath);
-            return {
-                side: img.side,
-                lane: img.lane,
-                fileName: img.fileName,
-                size: img.size,
-                modifiedAt: img.modifiedAt,
-                url: links.url,
-                publicUrl: links.publicUrl,
-                absolutePath: img.absolutePath
-            };
-        });
-
-        res.json({
-            success: true,
-            message: 'File uploaded and processed successfully',
-            pipelinePath: pipelinePath,
-            data: kmlData,
-            mergeImageCount: mergeImages.length,
-            mergeImages
-        });
+        const downloadBaseName = (req.file.originalname || 'generated_kml').replace(/\.kml$/i, '') || 'generated_kml';
+        return sendGeneratedKmlResponse(res, userDirs, downloadBaseName);
     } catch (error) {
         console.error('Upload-KML Error:', error);
         res.status(500).json({
@@ -2304,28 +2338,10 @@ app.post('/save', authenticateToken, async (req, res) => {
             throw new Error('Save operation failed to generate pipeline files');
         }
 
-        const mergeImages = getMergeImageEntries(req.user.username).map((img) => {
-            const links = publicImageLinks(req, img.absolutePath);
-            return {
-                side: img.side,
-                lane: img.lane,
-                fileName: img.fileName,
-                size: img.size,
-                modifiedAt: img.modifiedAt,
-                url: links.url,
-                publicUrl: links.publicUrl,
-                absolutePath: img.absolutePath
-            };
-        });
-
-        res.json({
-            success: true,
-            message: 'Data saved and processed successfully',
-            id: newData.id,
-            pipelinePath: pipelinePath,
-            mergeImageCount: mergeImages.length,
-            mergeImages
-        });
+        const chainageLabel = (newData.metadata && newData.metadata.chainage)
+            ? `chainage_${String(newData.metadata.chainage).replace(/[^\w.\-]+/g, '_')}`
+            : 'generated_kml';
+        return sendGeneratedKmlResponse(res, userDirs, chainageLabel);
     } catch (error) {
         console.error('Save Error:', error);
         res.status(500).json({
